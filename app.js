@@ -1743,30 +1743,45 @@ function openAddUserForm() {
 /* ============ طباعة الإيصال ============ */
 
 function printReceipt(data) {
-  const win = window.open('', '_blank', 'width=340,height=520');
-  win.document.write(`
-    <html dir="rtl"><head><title>إيصال</title>
-    <style>
-      body { font-family: 'Courier New', monospace; padding: 16px; }
-      .center { text-align: center; }
-      hr { border: none; border-top: 1px dashed #000; }
-      .row { display: flex; justify-content: space-between; margin: 6px 0; }
-    </style></head>
-    <body>
-      <div class="center"><h2>${SHOP_NAME}</h2></div>
-      <hr />
-      <div class="row"><span>العميل:</span><span>${data.customerName || '-'}</span></div>
-      <div class="row"><span>الهاتف:</span><span>${data.customerPhone || '-'}</span></div>
-      <div class="row"><span>المنتج:</span><span>${data.productName || '-'}</span></div>
-      <div class="row"><span>الموظف:</span><span>${data.employee || '-'}</span></div>
-      <hr />
-      <div class="row" style="font-weight:bold;font-size:18px"><span>الإجمالي:</span><span>${Number(data.total || 0).toLocaleString()} ج.م</span></div>
-      <hr />
-      <div class="center">شكرًا لتعاملكم معنا</div>
-      <script>window.print();</script>
-    </body></html>
-  `);
-  win.document.close();
+  // مقاس ورق الطابعة بالملي: 80 (XP-80 وأغلب موديلات Xprinter) أو 58 (XP-58). بيتغير من config.js
+  const width = (typeof RECEIPT_WIDTH_MM !== 'undefined' && Number(RECEIPT_WIDTH_MM)) || 80;
+  const printable = width <= 58 ? 48 : 72;
+  const now = new Date();
+  const when = now.toLocaleDateString('en-GB') + '  ' + now.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+  const row = function (label, value) {
+    return '<div class="row"><span class="l">' + label + '</span><span class="v">' + escHtml(value || '-') + '</span></div>';
+  };
+  const html = '<!DOCTYPE html><html dir="rtl"><head><meta charset="utf-8"><title>إيصال</title><style>' +
+    '@page { size: ' + width + 'mm auto; margin: 0; }' +
+    '* { box-sizing: border-box; }' +
+    'html, body { margin: 0; padding: 0; background: #fff; color: #000; }' +
+    'body { width: ' + printable + 'mm; margin: 0 auto; padding: 3mm 0 6mm; font-family: Tahoma, "Segoe UI", Arial, sans-serif; font-size: 12px; line-height: 1.55; }' +
+    '.center { text-align: center; }' +
+    'h2 { margin: 0 0 2px; font-size: 20px; }' +
+    '.muted { font-size: 11px; }' +
+    'hr { border: none; border-top: 1px dashed #000; margin: 6px 0; }' +
+    '.row { display: flex; justify-content: space-between; gap: 8px; margin: 3px 0; }' +
+    '.row .l { white-space: nowrap; }' +
+    '.row .v { text-align: left; font-weight: bold; word-break: break-word; }' +
+    '.total { font-size: 16px; font-weight: bold; }' +
+    '</style></head><body>' +
+    '<div class="center"><h2>' + escHtml(SHOP_NAME) + '</h2><div class="muted">' + when + '</div></div><hr />' +
+    row('العميل:', data.customerName) + row('الهاتف:', data.customerPhone) +
+    row('المنتج:', data.productName) + row('الموظف:', data.employee) + '<hr />' +
+    '<div class="row total"><span class="l">الإجمالي:</span><span class="v">' + Number(data.total || 0).toLocaleString() + ' ج.م</span></div><hr />' +
+    '<div class="center">شكرًا لتعاملكم معنا</div>' +
+    '</body></html>';
+
+  // بنطبع من iframe مخفي بدل نافذة جديدة، عشان المتصفح ميحجبش النافذة وتشتغل حتى بعد عمليات أوفلاين
+  const frame = document.createElement('iframe');
+  frame.style.cssText = 'position:fixed;right:0;bottom:0;width:0;height:0;border:0;visibility:hidden';
+  document.body.appendChild(frame);
+  const doc = frame.contentWindow.document;
+  doc.open(); doc.write(html); doc.close();
+  setTimeout(function () {
+    try { frame.contentWindow.focus(); frame.contentWindow.print(); } catch (e) { toast('تعذرت الطباعة: ' + e.message, 'error'); }
+    setTimeout(function () { frame.remove(); }, 60000);
+  }, 300);
 }
 
 /* ============ السكانر العام (يشتغل من أي مكان في النظام) ============ */
