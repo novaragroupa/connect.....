@@ -38,6 +38,7 @@ const SHEETS = {
   USERS: 'Users',
   MAINTENANCE: 'Maintenance',
   ACC_CATEGORIES: 'AccessoryCategories',
+  ACC_MODELS: 'AccessoryModels',
   ACC_ITEMS: 'AccessoryItems',
   ACC_SALES: 'AccessorySales',
   DEVICES: 'Devices',
@@ -50,8 +51,9 @@ const SCHEMAS = {
   Maintenance: ['id', 'date', 'deviceCategory', 'caseType', 'deviceType', 'faultType',
     'customerName', 'customerPhone', 'wholesaleCost', 'profitCost', 'total', 'notes', 'employee'],
   AccessoryCategories: ['id', 'name', 'createdAt'],
+  AccessoryModels: ['id', 'categoryId', 'categoryName', 'name', 'createdAt'],
   AccessoryItems: ['id', 'code', 'categoryId', 'categoryName', 'name', 'wholesalePrice',
-    'profitPrice', 'totalPrice', 'quantity', 'dateAdded'],
+    'profitPrice', 'totalPrice', 'quantity', 'dateAdded', 'modelId', 'modelName'],
   AccessorySales: ['id', 'code', 'itemId', 'itemName', 'categoryName', 'customerName',
     'customerPhone', 'quantity', 'wholesalePrice', 'profitPrice', 'unitPrice', 'totalPrice', 'notes', 'employee', 'date'],
   Devices: ['id', 'code', 'deviceType', 'condition', 'name', 'wholesalePrice', 'profitPrice', 'totalPrice',
@@ -83,7 +85,8 @@ function setupSheets() {
 
 function getSheet_(name) {
   const ss = getSpreadsheet_();
-  const sh = ss.getSheetByName(name);
+  let sh = ss.getSheetByName(name);
+  if (!sh && SCHEMAS[name]) { sh = ss.insertSheet(name); ensureHeaders_(sh, SCHEMAS[name]); }
   if (!sh) throw new Error('الشيت غير موجود: ' + name);
   return sh;
 }
@@ -179,7 +182,7 @@ function doGet(e) {
 
 // العمليات المسموح بيها جوه الرفع الجماعي (الطابور اللي اتسجل أوفلاين)
 const BATCH_ALLOWED = {
-  addMaintenance: 1, addAccessoryCategory: 1, addAccessoryItem: 1, sellAccessoryItem: 1,
+  addMaintenance: 1, addAccessoryCategory: 1, addAccessoryModel: 1, addAccessoryItem: 1, sellAccessoryItem: 1,
   addDevice: 1, sellDevice: 1, addCashTransfer: 1, moveAccessoryCategory: 1,
   updateAccessoryItem: 1, updateDevice: 1
 };
@@ -219,6 +222,9 @@ function dispatch_(action, body) {
 
     case 'addAccessoryCategory': return addAccessoryCategory_(body);
     case 'listAccessoryCategories': return { items: sheetToObjects_(getSheet_(SHEETS.ACC_CATEGORIES)) };
+
+    case 'addAccessoryModel': return addAccessoryModel_(body);
+    case 'listAccessoryModels': return { items: sheetToObjects_(getSheet_(SHEETS.ACC_MODELS)) };
 
     case 'addAccessoryItem': return addAccessoryItem_(body);
     case 'listAccessoryItems': return { items: sheetToObjects_(getSheet_(SHEETS.ACC_ITEMS)) };
@@ -339,6 +345,21 @@ function addAccessoryCategory_(body) {
   return { item: obj };
 }
 
+// موديل جوه نوع إكسسوار (مثلًا: كفرات > iPhone 15). الأصناف بتتربط بيه عن طريق modelId.
+function addAccessoryModel_(body) {
+  const sh = getSheet_(SHEETS.ACC_MODELS);
+  if (body.id) { const dup = findObjById_(sh, body.id); if (dup) return { item: dup, duplicate: true }; }
+  const name = String(body.name || '').trim();
+  if (!body.categoryId || !name) return { error: 'بيانات الموديل ناقصة' };
+  const same = sheetToObjects_(sh).some(function (m) {
+    return String(m.categoryId) === String(body.categoryId) && String(m.name).trim().toLowerCase() === name.toLowerCase();
+  });
+  if (same) return { error: 'الموديل ده موجود بالفعل في النوع ده' };
+  const obj = { id: clientId_(body), categoryId: body.categoryId, categoryName: body.categoryName || '', name: name, createdAt: clientDate_(body) };
+  appendObject_(sh, SCHEMAS.AccessoryModels, obj);
+  return { item: obj };
+}
+
 // نقل نوع بين إكسسوارات الموبايل والكمبيوتر: بنغيّر اسم النوع (علامة [كمبيوتر] في أوله)
 // وبنحدّث categoryName في كل أصناف النوع. الأصناف نفسها مربوطة بالـ id فمش بتتأثر.
 function moveAccessoryCategory_(body) {
@@ -409,6 +430,8 @@ function addAccessoryItem_(body) {
     code: code,
     categoryId: body.categoryId,
     categoryName: body.categoryName,
+    modelId: body.modelId || '',
+    modelName: body.modelName || '',
     name: body.name,
     wholesalePrice: wholesale,
     profitPrice: profit,
@@ -443,7 +466,16 @@ function updateAccessoryItem_(body) {
   updateCellByHeader_(sh, rowNum, SCHEMAS.AccessoryItems, 'totalPrice', wholesale + profit);
   updateCellByHeader_(sh, rowNum, SCHEMAS.AccessoryItems, 'quantity', quantity);
 
-  return { item: Object.assign({}, item, { name: name, wholesalePrice: wholesale, profitPrice: profit, totalPrice: wholesale + profit, quantity: quantity, code: newCode || item.code }) };
+  // الموديل: لو الواجهة بعتته نحدّثه، غير كده نسيبه زي ما هو
+  const hasModel = body.modelId !== undefined;
+  const modelId = hasModel ? String(body.modelId || '') : String(item.modelId || '');
+  const modelName = hasModel ? String(body.modelName || '') : String(item.modelName || '');
+  if (hasModel) {
+    updateCellByHeader_(sh, rowNum, SCHEMAS.AccessoryItems, 'modelId', modelId);
+    updateCellByHeader_(sh, rowNum, SCHEMAS.AccessoryItems, 'modelName', modelName);
+  }
+
+  return { item: Object.assign({}, item, { name: name, wholesalePrice: wholesale, profitPrice: profit, totalPrice: wholesale + profit, quantity: quantity, code: newCode || item.code, modelId: modelId, modelName: modelName }) };
 }
 
 function sellAccessoryItem_(body) {

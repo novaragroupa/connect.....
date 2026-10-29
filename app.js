@@ -68,7 +68,7 @@ function prefetchAll() {
   if (PREFETCHED || !CURRENT_USER) return;
   PREFETCHED = true;
   ['listMaintenance', 'listAccessorySales', 'listDeviceSales', 'listAccessoryItems',
-   'listDevices', 'listAccessoryCategories', 'listCashTransfers'].forEach(function (a) {
+   'listDevices', 'listAccessoryCategories', 'listAccessoryModels', 'listCashTransfers'].forEach(function (a) {
     cachedApi(a).catch(function () {});
   });
 }
@@ -371,7 +371,7 @@ async function doScanSearch() {
 
 function renderScanFoundProduct(data, code) {
   const item = data.item;
-  const label = data.type === 'accessory' ? dispCat(item.categoryName) : (item.deviceType + ' - ' + item.condition + ' - ' + item.warranty);
+  const label = data.type === 'accessory' ? escHtml(dispCat(item.categoryName) + (item.modelName ? ' / ' + item.modelName : '')) : (item.deviceType + ' - ' + item.condition + ' - ' + item.warranty);
   const resultBox = document.getElementById('scan-result');
   const outOfStock = Number(item.quantity) <= 0;
   resultBox.innerHTML = `
@@ -444,7 +444,9 @@ function renderScanNotFound(code) {
 async function openScanAddAccessoryForm(code, onSaved) {
   readScanCustomer();
   let categories = [];
+  let allModels = [];
   try { categories = (await cachedApi('listAccessoryCategories')).items; } catch (e) { /* ignore */ }
+  try { allModels = (await cachedApi('listAccessoryModels')).items; } catch (e) { /* ignore */ }
   const overlay = openModal(code ? ('إضافة منتج جديد — كود ' + code) : 'إضافة منتج إكسسوار جديد', `
     <form id="scan-item-form">
       <div class="field">
@@ -462,6 +464,9 @@ async function openScanAddAccessoryForm(code, onSaved) {
         </select>
       </div>
       <div class="field hidden" id="new-cat-field"><label>اسم النوع الجديد</label><input name="newCategoryName" /></div>
+      <div class="field"><label>الموديل (اختياري)</label>
+        <select name="modelId"><option value="">بدون موديل</option></select>
+      </div>
       <div class="field"><label>اسم الصنف</label><input name="name" required /></div>
       ${code ? '' : '<div class="field"><label>كود المنتج (اختياري)</label><input name="code" placeholder="اختياري - يتولد تلقائي" /></div>'}
       <div class="grid grid-2">
@@ -476,8 +481,12 @@ async function openScanAddAccessoryForm(code, onSaved) {
     </form>
   `, function (el) {
     const catSelect = el.querySelector('[name=categoryId]');
+    const modelSelect = el.querySelector('[name=modelId]');
     catSelect.addEventListener('change', function () {
       el.querySelector('#new-cat-field').classList.toggle('hidden', catSelect.value.indexOf('__new') !== 0);
+      modelSelect.innerHTML = '<option value="">بدون موديل</option>' + allModels.filter(function (m) {
+        return String(m.categoryId) === String(catSelect.value);
+      }).map(function (m) { return '<option value="' + escHtml(m.id) + '">' + escHtml(m.name) + '</option>'; }).join('');
     });
     const codeField = el.querySelector('[name=code]');
     if (codeField) codeField.addEventListener('keydown', function (e) {
@@ -500,6 +509,7 @@ async function openScanAddAccessoryForm(code, onSaved) {
         }
         const res = await apiWrite('addAccessoryItem', {
           code: code || fd.get('code'), categoryId: categoryId, categoryName: categoryName, name: fd.get('name'),
+          modelId: fd.get('modelId') || '', modelName: accModelName(fd.get('modelId')),
           wholesalePrice: fd.get('wholesalePrice'), profitPrice: fd.get('profitPrice'), quantity: fd.get('quantity')
         });
         patchCacheAdd('listAccessoryItems', res.item);
@@ -743,6 +753,13 @@ function openMaintenanceForm() {
 /* ============ الإكسسوارات ============ */
 
 let currentAccCategory = null;
+let currentModelFilter = null; // null = صفحة الموديلات، '' = أصناف بدون موديل، غير كده id الموديل
+let currentModelName = '';
+
+function accModelName(id) {
+  const m = ((LISTS.listAccessoryModels || {}).items || []).find(function (x) { return String(x.id) === String(id); });
+  return m ? m.name : '';
+}
 
 // تقسيم الإكسسوارات: موبايل / كمبيوتر. نوع الكمبيوتر بيتحفظ في الشيت باسمه مسبوق بعلامة،
 // والعلامة دي بتتشال دايمًا عند العرض، فمش هتظهر في أي شاشة.
@@ -882,23 +899,89 @@ function openAddCategoryForm() {
 }
 
 async function renderAccessoryItems(catId, catName) {
-  setBreadcrumb((catIsPc({ name: catName }) ? 'إكسسوارات الكمبيوتر / ' : 'الإكسسوارات / ') + dispCat(catName));
+  currentModelFilter = null; currentModelName = '';
+  const isPc = catIsPc({ name: catName });
+  setBreadcrumb((isPc ? 'إكسسوارات الكمبيوتر / ' : 'الإكسسوارات / ') + dispCat(catName));
   content().innerHTML = `
     <div class="section-header">
       <button class="link-btn" id="back-cats">→ رجوع لكل الأنواع</button>
       <div class="toolbar">
+        <button class="btn btn-primary btn-sm" id="add-model-btn">+ إضافة موديل</button>
+        <button class="btn btn-outline btn-sm" id="move-cat-btn">↔ نقل لـ ${isPc ? 'إكسسوارات الموبايل' : 'إكسسوارات الكمبيوتر'}</button>
+      </div>
+    </div>
+    <div class="grid grid-4" id="model-grid"><div class="empty-state">جاري التحميل...</div></div>
+  `;
+  document.getElementById('back-cats').addEventListener('click', renderAccessories);
+  document.getElementById('add-model-btn').addEventListener('click', function () { openAddModelForm(catId, catName); });
+  document.getElementById('move-cat-btn').addEventListener('click', function () { moveAccessoryCategory(catId, catName, renderAccessories); });
+  try {
+    const res = await Promise.all([cachedApi('listAccessoryModels'), cachedApi('listAccessoryItems')]);
+    const models = res[0].items.filter(function (m) { return String(m.categoryId) === String(catId); });
+    const items = res[1].items.filter(function (i) { return String(i.categoryId) === String(catId); });
+    const noModel = items.filter(function (i) { return !i.modelId; }).length;
+    const cards = models.map(function (m) {
+      const count = items.filter(function (i) { return String(i.modelId) === String(m.id); }).length;
+      return `<div class="category-box" data-model-id="${escHtml(m.id)}">
+        <div class="icon">📲</div><div class="name">${escHtml(m.name)}</div><div class="count">${count} صنف</div></div>`;
+    });
+    if (noModel) {
+      cards.push(`<div class="category-box" data-model-id="">
+        <div class="icon">📦</div><div class="name">بدون موديل</div><div class="count">${noModel} صنف</div></div>`);
+    }
+    document.getElementById('model-grid').innerHTML = cards.join('') ||
+      '<div class="empty-state">لا توجد موديلات بعد، اضغط "إضافة موديل" وابدأ</div>';
+    document.querySelectorAll('[data-model-id]').forEach(function (box) {
+      box.addEventListener('click', function () {
+        const id = box.getAttribute('data-model-id');
+        renderModelItems(catId, catName, id, id ? accModelName(id) : '');
+      });
+    });
+  } catch (err) {
+    document.getElementById('model-grid').innerHTML = `<div class="empty-state">${escHtml(err.message)}</div>`;
+  }
+}
+
+function openAddModelForm(catId, catName) {
+  const overlay = openModal('إضافة موديل — ' + dispCat(catName), `
+    <form id="model-form">
+      <div class="field"><label>اسم الموديل (مثال: iPhone 15 أو Galaxy S24)</label><input name="name" required /></div>
+      <div class="modal-actions">
+        <button type="submit" class="btn btn-primary">حفظ</button>
+        <button type="button" class="btn btn-outline" id="cancel-btn">إلغاء</button>
+      </div>
+    </form>
+  `, function (el) {
+    el.querySelector('[name=name]').focus();
+    el.querySelector('#cancel-btn').addEventListener('click', function () { overlay.remove(); });
+    el.querySelector('#model-form').addEventListener('submit', function (e) {
+      e.preventDefault();
+      const name = String(new FormData(e.target).get('name')).trim();
+      saveInBackground(overlay, async function () {
+        await apiWrite('addAccessoryModel', { categoryId: catId, categoryName: catName, name: name });
+      }, { successMsg: 'تمت إضافة الموديل', onDone: function () { renderAccessoryItems(catId, catName); } });
+    });
+  });
+}
+
+async function renderModelItems(catId, catName, modelId, modelName) {
+  currentModelFilter = modelId || '';
+  currentModelName = modelName || '';
+  setBreadcrumb((catIsPc({ name: catName }) ? 'إكسسوارات الكمبيوتر / ' : 'الإكسسوارات / ') + dispCat(catName) + ' / ' + (modelName || 'بدون موديل'));
+  content().innerHTML = `
+    <div class="section-header">
+      <button class="link-btn" id="back-models">→ رجوع لموديلات ${escHtml(dispCat(catName))}</button>
+      <div class="toolbar">
         <input type="text" id="item-search" placeholder="بحث باسم الصنف..." />
         <button class="btn btn-dark btn-sm" id="scan-add-btn">🔍 إضافة/تعديل بالباركود</button>
         <button class="btn btn-outline btn-sm" id="add-item-btn">+ إضافة صنف يدوي</button>
-        <button class="btn btn-outline btn-sm" id="move-cat-btn">↔ نقل لـ ${catIsPc({ name: catName }) ? 'إكسسوارات الموبايل' : 'إكسسوارات الكمبيوتر'}</button>
       </div>
     </div>
     <div id="items-table" class="table-wrap"><div class="empty-state">جاري التحميل...</div></div>
   `;
-  document.getElementById('back-cats').addEventListener('click', renderAccessories);
+  document.getElementById('back-models').addEventListener('click', function () { renderAccessoryItems(catId, catName); });
   document.getElementById('add-item-btn').addEventListener('click', function () { openAddItemForm(catId, catName); });
   document.getElementById('scan-add-btn').addEventListener('click', function () { openQuickBarcodeForCategory(catId, catName); });
-  document.getElementById('move-cat-btn').addEventListener('click', function () { moveAccessoryCategory(catId, catName, renderAccessories); });
   document.getElementById('item-search').addEventListener('input', function () { loadItemsTable(catId); });
   await loadItemsTable(catId);
 }
@@ -937,6 +1020,7 @@ async function loadItemsTable(catId) {
   try {
     const data = await cachedApi('listAccessoryItems');
     let rows = data.items.filter(function (i) { return i.categoryId === catId; });
+    if (currentModelFilter !== null) rows = rows.filter(function (i) { return String(i.modelId || '') === currentModelFilter; });
     if (search) rows = rows.filter(function (i) { return i.name.toLowerCase().includes(search.toLowerCase()); });
     document.getElementById('items-table').innerHTML = rows.length ? `
       <table>
@@ -954,7 +1038,7 @@ async function loadItemsTable(catId) {
             </tr>`;
           }).join('')}
         </tbody>
-      </table>` : `<div class="empty-state">لا توجد أصناف في هذا النوع بعد</div>`;
+      </table>` : `<div class="empty-state">لا توجد أصناف في هذا الموديل بعد</div>`;
 
     document.querySelectorAll('[data-sell-id]').forEach(function (btn) {
       btn.addEventListener('click', function () {
@@ -974,7 +1058,7 @@ async function loadItemsTable(catId) {
 }
 
 function openAddItemForm(catId, catName, prefillCode) {
-  const overlay = openModal('إضافة صنف جديد — ' + dispCat(catName), `
+  const overlay = openModal('إضافة صنف جديد — ' + dispCat(catName) + (currentModelName ? ' / ' + escHtml(currentModelName) : ''), `
     <form id="item-form">
       <div class="field"><label>اسم الصنف</label><input name="name" required /></div>
       <div class="field"><label>كود المنتج (اختياري — سيبه فاضي عشان يتولد تلقائي)</label><input name="code" placeholder="اختياري" value="${prefillCode || ''}" /></div>
@@ -1000,6 +1084,7 @@ function openAddItemForm(catId, catName, prefillCode) {
       saveInBackground(overlay, async function () {
         const res = await apiWrite('addAccessoryItem', {
           categoryId: catId, categoryName: catName, name: fd.get('name'), code: fd.get('code'),
+          modelId: currentModelFilter || '', modelName: currentModelName || '',
           wholesalePrice: fd.get('wholesalePrice'), profitPrice: fd.get('profitPrice'), quantity: fd.get('quantity')
         });
         patchCacheAdd('listAccessoryItems', res.item);
@@ -1450,7 +1535,7 @@ async function loadInventoryBody(mode) {
                     <span>${i.quantity <= 2 ? '<span class="badge badge-danger">' + i.quantity + '</span>' : i.quantity}
                     <button class="link-btn" style="margin-right:8px" data-edit-acc-id="${i.id}">تعديل</button></span>
                   </div>
-                  <div style="color:#888">كود: ${i.code || '-'} — إجمالي السعر: ${Number(i.totalPrice).toLocaleString()} ج.م — أُضيف: ${i.dateAdded}</div>
+                  <div style="color:#888">كود: ${i.code || '-'}${i.modelName ? ' — موديل: ' + escHtml(i.modelName) : ''} — إجمالي السعر: ${Number(i.totalPrice).toLocaleString()} ج.م — أُضيف: ${i.dateAdded}</div>
                 </div>`;
               }).join('') : '<div class="empty-state" style="padding:12px">لا توجد أصناف</div>'}
             </div>`;
@@ -1504,6 +1589,13 @@ function openEditAccessoryForm(item, onSaved) {
         <div class="field"><label>سعر الجملة</label><input type="number" name="wholesalePrice" value="${item.wholesalePrice}" required /></div>
         <div class="field"><label>سعر المكسب</label><input type="number" name="profitPrice" value="${item.profitPrice}" required /></div>
       </div>
+      ${(function () {
+        const ms = ((LISTS.listAccessoryModels || {}).items || []).filter(function (m) { return String(m.categoryId) === String(item.categoryId); });
+        if (!ms.length) return '';
+        return '<div class="field"><label>الموديل</label><select name="modelId"><option value="">بدون موديل</option>' +
+          ms.map(function (m) { return '<option value="' + escHtml(m.id) + '"' + (String(m.id) === String(item.modelId || '') ? ' selected' : '') + '>' + escHtml(m.name) + '</option>'; }).join('') +
+          '</select></div>';
+      })()}
       <div class="field"><label>الكمية</label><input type="number" name="quantity" value="${item.quantity}" required /></div>
       <div class="modal-actions">
         <button type="submit" class="btn btn-primary">حفظ التعديلات</button>
@@ -1518,6 +1610,8 @@ function openEditAccessoryForm(item, onSaved) {
       try {
         await apiWrite('updateAccessoryItem', {
           id: item.id, name: fd.get('name'), code: fd.get('code'),
+          modelId: fd.get('modelId') === null ? undefined : fd.get('modelId'),
+          modelName: fd.get('modelId') === null ? undefined : accModelName(fd.get('modelId')),
           wholesalePrice: fd.get('wholesalePrice'), profitPrice: fd.get('profitPrice'), quantity: fd.get('quantity')
         });
         invalidateCache('listAccessoryItems');

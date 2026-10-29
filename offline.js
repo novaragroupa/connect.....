@@ -5,7 +5,7 @@
    - لما النت يرجع الطابور بيترفع لـ Google Sheets أوتوماتيك (على دفعات، ومن غير تكرار)
    ============================================================ */
 
-const LIST_ACTIONS = ['listMaintenance', 'listAccessoryCategories', 'listAccessoryItems', 'listAccessorySales',
+const LIST_ACTIONS = ['listMaintenance', 'listAccessoryCategories', 'listAccessoryModels', 'listAccessoryItems', 'listAccessorySales',
   'listDevices', 'listDeviceSales', 'listCashTransfers', 'listUsers'];
 const MAIN_LISTS = LIST_ACTIONS.filter(function (a) { return a !== 'listUsers'; });
 
@@ -123,7 +123,7 @@ function markNetUp() {
 }
 
 const OP_LABELS = {
-  addMaintenance: 'إضافة صيانة', addAccessoryCategory: 'إضافة نوع إكسسوار', addAccessoryItem: 'إضافة صنف',
+  addMaintenance: 'إضافة صيانة', addAccessoryCategory: 'إضافة نوع إكسسوار', addAccessoryModel: 'إضافة موديل', addAccessoryItem: 'إضافة صنف',
   addDevice: 'إضافة جهاز', addCashTransfer: 'تحويل كاش', sellAccessoryItem: 'بيع إكسسوار', sellDevice: 'بيع جهاز',
   updateAccessoryItem: 'تعديل صنف', updateDevice: 'تعديل جهاز', moveAccessoryCategory: 'نقل نوع'
 };
@@ -160,6 +160,7 @@ function savedMsg(defaultMsg) {
 
 function listFallback(action) {
   if (LISTS[action]) return LISTS[action];
+  if (action === 'listAccessoryModels') return { items: [] }; // ميزة جديدة: لسه ممكن تكون فاضية على الجهاز
   throw new Error('البيانات دي لسه متحملتش على الجهاز. افتح النظام مرة واحدة والنت شغال.');
 }
 
@@ -253,7 +254,7 @@ async function sellByCode(code, payload) {
 
 const ONLINE_ONLY = { addUser: 1 };
 const NEW_ID_ACTIONS = {
-  addMaintenance: 1, addAccessoryCategory: 1, addAccessoryItem: 1, addDevice: 1, addCashTransfer: 1,
+  addMaintenance: 1, addAccessoryCategory: 1, addAccessoryModel: 1, addAccessoryItem: 1, addDevice: 1, addCashTransfer: 1,
   sellAccessoryItem: 1, sellDevice: 1
 };
 
@@ -290,10 +291,19 @@ function localResult(op) {
     }
     case 'addAccessoryCategory':
       return { item: { id: p.id, name: p.name, createdAt: p.date } };
+    case 'addAccessoryModel': {
+      const nm = String(p.name || '').trim();
+      if (!p.categoryId || !nm) throw new Error('بيانات الموديل ناقصة');
+      const exists = ((LISTS.listAccessoryModels || {}).items || []).some(function (m) {
+        return String(m.categoryId) === String(p.categoryId) && String(m.name).trim().toLowerCase() === nm.toLowerCase();
+      });
+      if (exists) throw new Error('الموديل ده موجود بالفعل في النوع ده');
+      return { item: { id: p.id, categoryId: p.categoryId, categoryName: p.categoryName || '', name: nm, createdAt: p.date } };
+    }
     case 'addAccessoryItem': {
       if (codeExistsLocal(p.code)) throw new Error('الكود ده مستخدم بالفعل لمنتج تاني');
       const w = num(p.wholesalePrice), pr = num(p.profitPrice);
-      return { item: { id: p.id, code: p.code, categoryId: p.categoryId, categoryName: p.categoryName, name: p.name,
+      return { item: { id: p.id, code: p.code, categoryId: p.categoryId, categoryName: p.categoryName, modelId: p.modelId || '', modelName: p.modelName || '', name: p.name,
         wholesalePrice: w, profitPrice: pr, totalPrice: w + pr, quantity: num(p.quantity), dateAdded: p.date } };
     }
     case 'addDevice': {
@@ -343,6 +353,7 @@ function localResult(op) {
       const merged = Object.assign({}, cur, { name: p.name ? p.name : cur.name, code: newCode || cur.code,
         wholesalePrice: w, profitPrice: pr, totalPrice: w + pr, quantity: q });
       if (isDev) { merged.warranty = p.warranty || cur.warranty; merged.deviceType = p.deviceType || cur.deviceType; }
+      else if (p.modelId !== undefined) { merged.modelId = String(p.modelId || ''); merged.modelName = String(p.modelName || ''); }
       return { item: merged };
     }
     case 'moveAccessoryCategory': {
@@ -361,6 +372,7 @@ function localResult(op) {
 }
 
 function upsert(listName, obj) {
+  if (!LISTS[listName] && listName === 'listAccessoryModels') LISTS[listName] = { items: [] };
   if (!LISTS[listName] || !obj) return;
   const arr = LISTS[listName].items;
   const i = arr.findIndex(function (x) { return String(x.id) === String(obj.id); });
@@ -374,6 +386,7 @@ function applyOp(op, result) {
   switch (op.action) {
     case 'addMaintenance': upsert('listMaintenance', r.item); break;
     case 'addAccessoryCategory': upsert('listAccessoryCategories', r.item); break;
+    case 'addAccessoryModel': upsert('listAccessoryModels', r.item); break;
     case 'addAccessoryItem': upsert('listAccessoryItems', r.item); break;
     case 'addDevice': upsert('listDevices', r.item); break;
     case 'addCashTransfer': upsert('listCashTransfers', r.item); break;
