@@ -455,3 +455,23 @@ tbody tr:hover { background: var(--charcoal-3); }
 .receipt .center { text-align: center; }
 
 .hidden { display: none !important; }
+
+
+/* ---------- حالة الاتصال / الأوفلاين ---------- */
+
+.net-status { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.net-chip {
+  border: 1px solid var(--border);
+  background: var(--charcoal-3);
+  color: var(--text);
+  border-radius: 999px;
+  padding: 6px 14px;
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.net-chip.on { color: #7bd6a3; }
+.net-chip.off { background: rgba(217, 105, 92, 0.15); border-color: rgba(217, 105, 92, 0.4); color: #f0a89f; }
+.net-chip.wait { background: rgba(224, 162, 106, 0.15); border-color: var(--copper); color: var(--copper-light); }
+.net-chip.sync { border-color: var(--copper); color: var(--copper-light); }
+.net-chip.bad { background: var(--danger); border-color: transparent; color: #fff; }

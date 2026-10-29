@@ -151,57 +151,120 @@ function nowStr_() {
   return Utilities.formatDate(new Date(), Session.getScriptTimeZone() || 'Africa/Cairo', 'yyyy-MM-dd HH:mm:ss');
 }
 
+// الواجهة (وهي أوفلاين) بتولّد id وتاريخ العملية من عندها. السيرفر بيستخدمهم،
+// ولو نفس الـ id وصل تاني (مثلًا الإنترنت قطع بعد ما العملية اتسجلت) بيرجّع العملية القديمة من غير تكرار.
+function clientId_(body) {
+  const id = body && body.id ? String(body.id).trim() : '';
+  return id || Utilities.getUuid();
+}
+
+function clientDate_(body) {
+  const d = body && body.date ? String(body.date) : '';
+  return /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(d) ? d : nowStr_();
+}
+
+function findObjById_(sh, id) {
+  const all = sheetToObjects_(sh);
+  for (let i = 0; i < all.length; i++) {
+    if (String(all[i].id) === String(id)) return all[i];
+  }
+  return null;
+}
+
 /* ============ نقطة الدخول ============ */
 
 function doGet(e) {
   return jsonOut_({ ok: true, message: 'CONNECT API شغال' });
 }
 
+// العمليات المسموح بيها جوه الرفع الجماعي (الطابور اللي اتسجل أوفلاين)
+const BATCH_ALLOWED = {
+  addMaintenance: 1, addAccessoryCategory: 1, addAccessoryItem: 1, sellAccessoryItem: 1,
+  addDevice: 1, sellDevice: 1, addCashTransfer: 1, moveAccessoryCategory: 1,
+  updateAccessoryItem: 1, updateDevice: 1
+};
+
 function doPost(e) {
+  let lock = null;
   try {
     const body = JSON.parse(e.postData.contents);
     const action = body.action;
-    let result;
 
-    switch (action) {
-      case 'login': result = login_(body); break;
-      case 'addUser': result = addUser_(body); break;
-      case 'listUsers': result = { items: sheetToObjects_(getSheet_(SHEETS.USERS)).map(stripPassword_) }; break;
-
-      case 'addMaintenance': result = addMaintenance_(body); break;
-      case 'listMaintenance': result = { items: sheetToObjects_(getSheet_(SHEETS.MAINTENANCE)) }; break;
-
-      case 'addAccessoryCategory': result = addAccessoryCategory_(body); break;
-      case 'listAccessoryCategories': result = { items: sheetToObjects_(getSheet_(SHEETS.ACC_CATEGORIES)) }; break;
-
-      case 'addAccessoryItem': result = addAccessoryItem_(body); break;
-      case 'listAccessoryItems': result = { items: sheetToObjects_(getSheet_(SHEETS.ACC_ITEMS)) }; break;
-      case 'sellAccessoryItem': result = sellAccessoryItem_(body); break;
-      case 'listAccessorySales': result = { items: sheetToObjects_(getSheet_(SHEETS.ACC_SALES)) }; break;
-
-      case 'addDevice': result = addDevice_(body); break;
-      case 'listDevices': result = { items: sheetToObjects_(getSheet_(SHEETS.DEVICES)) }; break;
-      case 'sellDevice': result = sellDevice_(body); break;
-      case 'listDeviceSales': result = { items: sheetToObjects_(getSheet_(SHEETS.DEVICE_SALES)) }; break;
-
-      case 'addCashTransfer': result = addCashTransfer_(body); break;
-      case 'listCashTransfers': result = { items: sheetToObjects_(getSheet_(SHEETS.CASH)) }; break;
-
-      case 'accountingSummary': result = accountingSummary_(); break;
-
-      case 'findProductByCode': result = findProductByCode_(body); break;
-      case 'sellByCode': result = sellByCode_(body); break;
-
-      case 'moveAccessoryCategory': result = moveAccessoryCategory_(body); break;
-      case 'updateAccessoryItem': result = updateAccessoryItem_(body); break;
-      case 'updateDevice': result = updateDevice_(body); break;
-
-      default: result = { error: 'إجراء غير معروف: ' + action };
+    // قفل: عشان لو جهازين رفعوا في نفس اللحظة العمليات متتداخلش وتبوّظ المخزون
+    if (action === 'batch' || /^(add|sell|update|move)/.test(String(action))) {
+      lock = LockService.getScriptLock();
+      lock.waitLock(30000);
     }
+
+    const result = action === 'batch' ? runBatch_(body) : dispatch_(action, body);
+    if (result && result.error) return jsonOut_({ ok: false, error: result.error });
     return jsonOut_(Object.assign({ ok: true }, result));
   } catch (err) {
-    return jsonOut_({ ok: false, error: String(err) });
+    return jsonOut_({ ok: false, error: String(err && err.message ? err.message : err) });
+  } finally {
+    if (lock) { try { lock.releaseLock(); } catch (x) { /* تجاهل */ } }
   }
+}
+
+function dispatch_(action, body) {
+  switch (action) {
+    case 'ping': return { pong: true };
+
+    case 'login': return login_(body);
+    case 'addUser': return addUser_(body);
+    case 'listUsers': return { items: sheetToObjects_(getSheet_(SHEETS.USERS)).map(stripPassword_) };
+
+    case 'addMaintenance': return addMaintenance_(body);
+    case 'listMaintenance': return { items: sheetToObjects_(getSheet_(SHEETS.MAINTENANCE)) };
+
+    case 'addAccessoryCategory': return addAccessoryCategory_(body);
+    case 'listAccessoryCategories': return { items: sheetToObjects_(getSheet_(SHEETS.ACC_CATEGORIES)) };
+
+    case 'addAccessoryItem': return addAccessoryItem_(body);
+    case 'listAccessoryItems': return { items: sheetToObjects_(getSheet_(SHEETS.ACC_ITEMS)) };
+    case 'sellAccessoryItem': return sellAccessoryItem_(body);
+    case 'listAccessorySales': return { items: sheetToObjects_(getSheet_(SHEETS.ACC_SALES)) };
+
+    case 'addDevice': return addDevice_(body);
+    case 'listDevices': return { items: sheetToObjects_(getSheet_(SHEETS.DEVICES)) };
+    case 'sellDevice': return sellDevice_(body);
+    case 'listDeviceSales': return { items: sheetToObjects_(getSheet_(SHEETS.DEVICE_SALES)) };
+
+    case 'addCashTransfer': return addCashTransfer_(body);
+    case 'listCashTransfers': return { items: sheetToObjects_(getSheet_(SHEETS.CASH)) };
+
+    case 'accountingSummary': return accountingSummary_();
+
+    case 'findProductByCode': return findProductByCode_(body);
+    case 'sellByCode': return sellByCode_(body);
+
+    case 'moveAccessoryCategory': return moveAccessoryCategory_(body);
+    case 'updateAccessoryItem': return updateAccessoryItem_(body);
+    case 'updateDevice': return updateDevice_(body);
+
+    default: return { error: 'إجراء غير معروف: ' + action };
+  }
+}
+
+// رفع مجموعة عمليات بالترتيب في طلب واحد. كل عملية ليها نتيجتها (نجحت/فشلت) وفشل واحدة مبيوقفش الباقي.
+function runBatch_(body) {
+  const ops = body.ops || [];
+  const results = [];
+  for (let i = 0; i < ops.length; i++) {
+    const op = ops[i] || {};
+    try {
+      if (!BATCH_ALLOWED[op.action]) {
+        results.push({ ok: false, error: 'عملية غير مسموحة في الرفع الجماعي: ' + op.action });
+        continue;
+      }
+      const r = dispatch_(op.action, Object.assign({}, op.payload || {}, { action: op.action }));
+      if (r && r.error) results.push({ ok: false, error: r.error });
+      else results.push(Object.assign({ ok: true }, r));
+    } catch (err) {
+      results.push({ ok: false, error: String(err && err.message ? err.message : err) });
+    }
+  }
+  return { results: results };
 }
 
 function stripPassword_(u) {
@@ -243,11 +306,12 @@ function addUser_(body) {
 
 function addMaintenance_(body) {
   const sh = getSheet_(SHEETS.MAINTENANCE);
+  if (body.id) { const dup = findObjById_(sh, body.id); if (dup) return { item: dup, duplicate: true }; }
   const wholesale = Number(body.wholesaleCost) || 0;
   const profit = Number(body.profitCost) || 0;
   const obj = {
-    id: Utilities.getUuid(),
-    date: nowStr_(),
+    id: clientId_(body),
+    date: clientDate_(body),
     deviceCategory: body.deviceCategory, // هاردوير / سوفتوير
     caseType: body.caseType, // كشف اعطال / عطل معروف
     deviceType: body.deviceType || '',
@@ -269,7 +333,8 @@ function addMaintenance_(body) {
 
 function addAccessoryCategory_(body) {
   const sh = getSheet_(SHEETS.ACC_CATEGORIES);
-  const obj = { id: Utilities.getUuid(), name: body.name, createdAt: nowStr_() };
+  if (body.id) { const dup = findObjById_(sh, body.id); if (dup) return { item: dup, duplicate: true }; }
+  const obj = { id: clientId_(body), name: body.name, createdAt: clientDate_(body) };
   appendObject_(sh, SCHEMAS.AccessoryCategories, obj);
   return { item: obj };
 }
@@ -329,13 +394,18 @@ function codeExists_(code) {
 
 function addAccessoryItem_(body) {
   const sh = getSheet_(SHEETS.ACC_ITEMS);
+  if (body.id) { const dup = findObjById_(sh, body.id); if (dup) return { item: dup, duplicate: true }; }
   const wholesale = Number(body.wholesalePrice) || 0;
   const profit = Number(body.profitPrice) || 0;
   let code = (body.code || '').toString().trim();
   if (!code) { do { code = genCode_(); } while (codeExists_(code)); }
-  else if (codeExists_(code)) { return { error: 'الكود ده مستخدم بالفعل لمنتج تاني' }; }
+  else if (codeExists_(code)) {
+    // لو الكود اتولّد تلقائي من الجهاز وطلع مكرر، نولّد غيره بدل ما نرفض العملية
+    if (body.autoCode) { do { code = genCode_(); } while (codeExists_(code)); }
+    else return { error: 'الكود ده مستخدم بالفعل لمنتج تاني' };
+  }
   const obj = {
-    id: Utilities.getUuid(),
+    id: clientId_(body),
     code: code,
     categoryId: body.categoryId,
     categoryName: body.categoryName,
@@ -344,7 +414,7 @@ function addAccessoryItem_(body) {
     profitPrice: profit,
     totalPrice: wholesale + profit,
     quantity: Number(body.quantity) || 0,
-    dateAdded: nowStr_()
+    dateAdded: clientDate_(body)
   };
   appendObject_(sh, SCHEMAS.AccessoryItems, obj);
   return { item: obj };
@@ -378,6 +448,15 @@ function updateAccessoryItem_(body) {
 
 function sellAccessoryItem_(body) {
   const sh = getSheet_(SHEETS.ACC_ITEMS);
+  const salesSh = getSheet_(SHEETS.ACC_SALES);
+  if (body.id) {
+    // نفس عملية البيع وصلت قبل كده (مثلًا النت قطع قبل الرد): منخصمش المخزون تاني
+    const dupSale = findObjById_(salesSh, body.id);
+    if (dupSale) {
+      const cur = findObjById_(sh, dupSale.itemId);
+      return { sale: dupSale, remainingQuantity: cur ? Number(cur.quantity) : 0, duplicate: true };
+    }
+  }
   const rowNum = findRowIndexById_(sh, body.itemId);
   if (rowNum === -1) return { error: 'الصنف غير موجود' };
   const items = sheetToObjects_(sh);
@@ -388,9 +467,8 @@ function sellAccessoryItem_(body) {
 
   updateCellByHeader_(sh, rowNum, SCHEMAS.AccessoryItems, 'quantity', qty - sellQty);
 
-  const salesSh = getSheet_(SHEETS.ACC_SALES);
   const sale = {
-    id: Utilities.getUuid(),
+    id: clientId_(body),
     code: item.code || '',
     itemId: item.id,
     itemName: item.name,
@@ -404,7 +482,7 @@ function sellAccessoryItem_(body) {
     totalPrice: Number(item.totalPrice) * sellQty,
     notes: body.notes || '',
     employee: body.employee || '',
-    date: nowStr_()
+    date: clientDate_(body)
   };
   appendObject_(salesSh, SCHEMAS.AccessorySales, sale);
   invalidateAccountingCache_();
@@ -415,13 +493,18 @@ function sellAccessoryItem_(body) {
 
 function addDevice_(body) {
   const sh = getSheet_(SHEETS.DEVICES);
+  if (body.id) { const dup = findObjById_(sh, body.id); if (dup) return { item: dup, duplicate: true }; }
   const wholesale = Number(body.wholesalePrice) || 0;
   const profit = Number(body.profitPrice) || 0;
   let code = (body.code || '').toString().trim();
   if (!code) { do { code = genCode_(); } while (codeExists_(code)); }
-  else if (codeExists_(code)) { return { error: 'الكود ده مستخدم بالفعل لمنتج تاني' }; }
+  else if (codeExists_(code)) {
+    // لو الكود اتولّد تلقائي من الجهاز وطلع مكرر، نولّد غيره بدل ما نرفض العملية
+    if (body.autoCode) { do { code = genCode_(); } while (codeExists_(code)); }
+    else return { error: 'الكود ده مستخدم بالفعل لمنتج تاني' };
+  }
   const obj = {
-    id: Utilities.getUuid(),
+    id: clientId_(body),
     code: code,
     deviceType: body.deviceType || 'أخرى',
     condition: body.condition, // جديد / مستعمل
@@ -431,7 +514,7 @@ function addDevice_(body) {
     totalPrice: wholesale + profit,
     warranty: body.warranty, // له ضمان / بدون ضمان
     quantity: Number(body.quantity) || 0,
-    dateAdded: nowStr_()
+    dateAdded: clientDate_(body)
   };
   appendObject_(sh, SCHEMAS.Devices, obj);
   return { item: obj };
@@ -469,6 +552,14 @@ function updateDevice_(body) {
 
 function sellDevice_(body) {
   const sh = getSheet_(SHEETS.DEVICES);
+  const salesSh = getSheet_(SHEETS.DEVICE_SALES);
+  if (body.id) {
+    const dupSale = findObjById_(salesSh, body.id);
+    if (dupSale) {
+      const cur = findObjById_(sh, dupSale.deviceId);
+      return { sale: dupSale, remainingQuantity: cur ? Number(cur.quantity) : 0, duplicate: true };
+    }
+  }
   const rowNum = findRowIndexById_(sh, body.deviceId);
   if (rowNum === -1) return { error: 'الجهاز غير موجود' };
   const items = sheetToObjects_(sh);
@@ -479,9 +570,8 @@ function sellDevice_(body) {
 
   updateCellByHeader_(sh, rowNum, SCHEMAS.Devices, 'quantity', qty - sellQty);
 
-  const salesSh = getSheet_(SHEETS.DEVICE_SALES);
   const sale = {
-    id: Utilities.getUuid(),
+    id: clientId_(body),
     code: dev.code || '',
     deviceId: dev.id,
     deviceName: dev.name,
@@ -497,7 +587,7 @@ function sellDevice_(body) {
     totalPrice: Number(dev.totalPrice) * sellQty,
     notes: body.notes || '',
     employee: body.employee || '',
-    date: nowStr_()
+    date: clientDate_(body)
   };
   appendObject_(salesSh, SCHEMAS.DeviceSales, sale);
   invalidateAccountingCache_();
@@ -508,15 +598,16 @@ function sellDevice_(body) {
 
 function addCashTransfer_(body) {
   const sh = getSheet_(SHEETS.CASH);
+  if (body.id) { const dup = findObjById_(sh, body.id); if (dup) return { item: dup, duplicate: true }; }
   const obj = {
-    id: Utilities.getUuid(),
+    id: clientId_(body),
     type: body.type, // سحب / ايداع
     customerName: body.customerName || '',
     customerPhone: body.customerPhone || '',
     amount: Number(body.amount) || 0,
     notes: body.notes || '',
     employee: body.employee || '',
-    date: nowStr_()
+    date: clientDate_(body)
   };
   appendObject_(sh, SCHEMAS.CashTransfers, obj);
   return { item: obj };

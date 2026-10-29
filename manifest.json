@@ -1,0 +1,15 @@
+{
+  "name": "Connect — نظام إدارة المحل",
+  "short_name": "Connect",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "dir": "rtl",
+  "lang": "ar",
+  "background_color": "#19191c",
+  "theme_color": "#19191c",
+  "icons": [
+    { "src": "logo-icon.webp", "sizes": "any", "type": "image/webp", "purpose": "any" },
+    { "src": "favicon.png", "sizes": "any", "type": "image/png", "purpose": "any" }
+  ]
+}

@@ -1,5 +1,6 @@
 /* ============ حالة عامة ============ */
-let CURRENT_USER = JSON.parse(sessionStorage.getItem('connect_user') || 'null');
+let CURRENT_USER = null;
+try { CURRENT_USER = JSON.parse(localStorage.getItem('connect_user') || 'null'); } catch (e) { CURRENT_USER = null; }
 let CURRENT_SECTION = 'dashboard';
 let CACHE = {}; // كاش بسيط للبيانات المجلوبة من الشيت
 
@@ -7,17 +8,31 @@ const root = document.getElementById('root');
 
 /* ============ اتصال بالـ API ============ */
 
-async function api(action, payload) {
+async function api(action, payload, timeoutMs) {
   if (!APPS_SCRIPT_URL || APPS_SCRIPT_URL.indexOf('PASTE_') === 0) {
-    throw new Error('https://script.google.com/macros/s/AKfycbwZJYstsoQpr5duvtN-qiml-AdceTQwA_S7Xy75zOccQQsO4gP_L6r7dfR0p7yLC2o3/exec');
+    throw new Error('لسه مظبطتش رابط الـ Apps Script في ملف config.js');
   }
-  const res = await fetch(APPS_SCRIPT_URL, {
-    method: 'POST',
-    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-    body: JSON.stringify(Object.assign({ action: action }, payload || {}))
-  });
-  const data = await res.json();
-  if (!data.ok) throw new Error(data.error || 'حصل خطأ غير معروف');
+  const ctl = new AbortController();
+  const timer = setTimeout(function () { ctl.abort(); }, timeoutMs || 20000);
+  let data;
+  try {
+    const res = await fetch(APPS_SCRIPT_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify(Object.assign({ action: action }, payload || {})),
+      signal: ctl.signal
+    });
+    data = await res.json();
+  } catch (e) {
+    clearTimeout(timer);
+    markNetDown();
+    const ne = new Error('مفيش اتصال بالإنترنت');
+    ne.isNetwork = true;
+    throw ne;
+  }
+  clearTimeout(timer);
+  markNetUp();
+  if (!data.ok || data.error) throw new Error(data.error || 'حصل خطأ غير معروف');
   return data;
 }
 
@@ -47,30 +62,6 @@ function readFinished() {
   }
   READ_FAILED = false;
 }
-const INFLIGHT = {}; // طلبات شغالة دلوقتي، عشان نفس الطلب ميتبعتش مرتين للسيرفر
-function cachedApi(action, payload, forceRefresh) {
-  const key = action + ':' + JSON.stringify(payload || {});
-  const now = Date.now();
-  if (!forceRefresh && CACHE[key] && (now - CACHE[key].time) < CACHE_TTL_MS) {
-    return Promise.resolve(CACHE[key].data);
-  }
-  if (!forceRefresh && INFLIGHT[key]) return INFLIGHT[key];
-  readStarted();
-  const p = api(action, payload).then(function (data) {
-    // لو الكاش اتمسح/اتعدل وإحنا في الطريق، منخزنش نسخة قديمة
-    if (INFLIGHT[key] === p) CACHE[key] = { data: data, time: Date.now() };
-    return data;
-  }, function (err) {
-    READ_FAILED = true;
-    throw err;
-  }).finally(function () {
-    if (INFLIGHT[key] === p) delete INFLIGHT[key];
-    readFinished();
-  });
-  INFLIGHT[key] = p;
-  return p;
-}
-
 // تحميل مسبق لأهم القوائم بعد الدخول، عشان التنقل بين الصفحات يبقى فوري
 let PREFETCHED = false;
 function prefetchAll() {
@@ -80,41 +71,6 @@ function prefetchAll() {
    'listDevices', 'listAccessoryCategories', 'listCashTransfers'].forEach(function (a) {
     cachedApi(a).catch(function () {});
   });
-}
-
-// بعد أي عملية إضافة/بيع/تعديل بتغيّر البيانات، بنمسح الكاش الخاص بيها
-// عشان أول قراءة بعدها تجيب النسخة المحدثة فعليًا من الشيت
-function invalidateCache(actionPrefix) {
-  Object.keys(CACHE).forEach(function (k) {
-    if (k.indexOf(actionPrefix + ':') === 0) delete CACHE[k];
-  });
-  Object.keys(INFLIGHT).forEach(function (k) {
-    if (k.indexOf(actionPrefix + ':') === 0) delete INFLIGHT[k];
-  });
-}
-
-// بعد ما السيرفر يؤكد الإضافة، بنحط الصف الجديد في الكاش مباشرة بدل ما نعيد تحميل القائمة كلها
-// (ده اللي بيخلي الجدول يتحدث فورًا). لو السيرفر مرجعش الصف، بنمسح الكاش ونرجع للطريقة العادية.
-function patchCacheAdd(action, item) {
-  const usable = item && typeof item === 'object' && (item.id !== undefined || item.date !== undefined);
-  Object.keys(CACHE).forEach(function (k) {
-    if (k.indexOf(action + ':') !== 0) return;
-    const d = CACHE[k].data;
-    if (usable && d && Array.isArray(d.items)) d.items.push(item);
-    else delete CACHE[k];
-  });
-  Object.keys(INFLIGHT).forEach(function (k) {
-    if (k.indexOf(action + ':') === 0) delete INFLIGHT[k];
-  });
-}
-
-// إبطال شامل لكل الكاش المرتبط ببيع أو تعديل منتج (إكسسوار أو جهاز)، يُستخدم بعد أي عملية بيع
-function invalidateProductCaches() {
-  invalidateCache('listAccessoryItems');
-  invalidateCache('listDevices');
-  invalidateCache('listAccessorySales');
-  invalidateCache('listDeviceSales');
-  invalidateCache('accountingSummary');
 }
 
 // إشعار في الجنب تحت. بيرجع كائن فيه update() عشان نغيّر الرسالة (من "جاري..." لـ "تم")
@@ -157,7 +113,7 @@ async function saveInBackground(overlay, work, opts) {
     return;
   }
   overlay.remove();
-  t.update(opts.successMsg || 'تمت إضافة البيانات بنجاح', 'success');
+  t.update(savedMsg(opts.successMsg || 'تمت إضافة البيانات بنجاح'), 'success');
   if (opts.onDone) opts.onDone(result);
 }
 
@@ -193,17 +149,18 @@ function renderLogin(errorMsg) {
     try {
       const data = await api('login', { username: fd.get('username'), password: fd.get('password') });
       CURRENT_USER = data.user;
-      sessionStorage.setItem('connect_user', JSON.stringify(CURRENT_USER));
+      localStorage.setItem('connect_user', JSON.stringify(CURRENT_USER));
       prefetchAll();
       renderApp();
     } catch (err) {
-      renderLogin(err.message);
+      renderLogin(err.isNetwork ? 'أول تسجيل دخول على الجهاز محتاج إنترنت. اتصل بالنت وجرّب تاني.' : err.message);
     }
   });
 }
 
 function logout() {
-  sessionStorage.removeItem('connect_user');
+  if (QUEUE.length && !confirm('فيه ' + QUEUE.length + ' عملية لسه متترفعتش للسيرفر. هتفضل محفوظة على الجهاز وهتترفع أول ما النت يرجع. تسجيل الخروج؟')) return;
+  localStorage.removeItem('connect_user');
   CURRENT_USER = null;
   PREFETCHED = false;
   CACHE = {};
@@ -255,6 +212,7 @@ function renderApp() {
             <h2 id="page-title"></h2>
             <div class="breadcrumb" id="page-breadcrumb"></div>
           </div>
+          <div id="net-status" class="net-status"></div>
         </div>
         <div class="content" id="page-content"></div>
       </div>
@@ -284,6 +242,7 @@ function renderApp() {
     accounting: renderAccounting,
     users: renderUsers
   };
+  updateNetStatus();
   (renderers[CURRENT_SECTION] || renderDashboard)();
 }
 
@@ -399,7 +358,7 @@ async function doScanSearch() {
   if (!code) { toast('اكتب أو امسح كود المنتج الأول', 'error'); return; }
   resultBox.innerHTML = `<div class="empty-state">جاري البحث...</div>`;
   try {
-    const data = await api('findProductByCode', { code: code });
+    const data = await findProduct(code);
     if (data.found) {
       renderScanFoundProduct(data, code);
     } else {
@@ -443,12 +402,12 @@ function renderScanFoundProduct(data, code) {
       const qty = document.getElementById('scan-sell-qty').value;
       const notesEl = document.getElementById('scan-sell-notes');
       try {
-        const result = await api('sellByCode', {
+        const result = await sellByCode(code, {
           code: code, customerName: scanCustomer.name, customerPhone: scanCustomer.phone,
           quantity: qty, notes: notesEl ? notesEl.value : '', employee: CURRENT_USER.name
         });
         invalidateProductCaches();
-        toast('تم تسجيل عملية البيع', 'success');
+        toast(savedMsg('تم تسجيل عملية البيع'), 'success');
         printReceipt({
           customerName: scanCustomer.name, customerPhone: scanCustomer.phone,
           productName: (result.sale.itemName || result.sale.deviceName) + (result.sale.quantity > 1 ? ' × ' + result.sale.quantity : ''),
@@ -533,13 +492,13 @@ async function openScanAddAccessoryForm(code, onSaved) {
         let categoryName;
         if (categoryId === '__new__' || categoryId === '__new_pc__') {
           const newName = (categoryId === '__new_pc__' ? PC_MARK : '') + String(fd.get('newCategoryName')).trim();
-          const newCat = await api('addAccessoryCategory', { name: newName });
+          const newCat = await apiWrite('addAccessoryCategory', { name: newName });
           categoryId = newCat.item.id; categoryName = newCat.item.name;
           patchCacheAdd('listAccessoryCategories', newCat.item);
         } else {
           categoryName = catSelect.options[catSelect.selectedIndex].getAttribute('data-name');
         }
-        const res = await api('addAccessoryItem', {
+        const res = await apiWrite('addAccessoryItem', {
           code: code || fd.get('code'), categoryId: categoryId, categoryName: categoryName, name: fd.get('name'),
           wholesalePrice: fd.get('wholesalePrice'), profitPrice: fd.get('profitPrice'), quantity: fd.get('quantity')
         });
@@ -602,7 +561,7 @@ function openScanAddDeviceForm(code, onSaved) {
       const fd = new FormData(e.target);
       const deviceType = fd.get('deviceType') === '__new__' ? fd.get('newDeviceType') : fd.get('deviceType');
       saveInBackground(overlay, async function () {
-        const res = await api('addDevice', {
+        const res = await apiWrite('addDevice', {
           code: code || fd.get('code'), condition: fd.get('condition'), name: fd.get('name'), warranty: fd.get('warranty'),
           deviceType: deviceType,
           wholesalePrice: fd.get('wholesalePrice'), profitPrice: fd.get('profitPrice'), quantity: fd.get('quantity')
@@ -620,11 +579,11 @@ async function sellScannedProductNow(code) {
     return;
   }
   try {
-    const result = await api('sellByCode', {
+    const result = await sellByCode(code, {
       code: code, customerName: scanCustomer.name, customerPhone: scanCustomer.phone, employee: CURRENT_USER.name
     });
     invalidateProductCaches();
-    toast('تم البيع بنجاح', 'success');
+    toast(savedMsg('تم البيع بنجاح'), 'success');
     printReceipt({
       customerName: scanCustomer.name, customerPhone: scanCustomer.phone,
       productName: result.sale.itemName || result.sale.deviceName,
@@ -751,7 +710,7 @@ function openMaintenanceForm() {
       const fd = new FormData(e.target);
       const tabAtSubmit = maintenanceTab;
       saveInBackground(overlay, async function () {
-        const result = await api('addMaintenance', {
+        const result = await apiWrite('addMaintenance', {
           deviceCategory: tabAtSubmit,
           caseType: fd.get('caseType'),
           deviceType: fd.get('deviceType'),
@@ -887,7 +846,7 @@ function moveAccessoryCategory(catId, catName, onDone) {
         if (cats.some(function (c) { return String(c.id) !== String(catId) && c.name === newName; })) {
           throw new Error('فيه نوع بنفس الاسم في ' + label);
         }
-        await api('moveAccessoryCategory', { id: catId, name: newName });
+        await apiWrite('moveAccessoryCategory', { id: catId, name: newName });
         Object.keys(CACHE).forEach(function (k) {
           if (k.indexOf('listAccessoryCategories:') !== 0) return;
           const d = CACHE[k].data;
@@ -915,7 +874,7 @@ function openAddCategoryForm() {
       e.preventDefault();
       const fd = new FormData(e.target);
       saveInBackground(overlay, async function () {
-        const res = await api('addAccessoryCategory', { name: (isPc ? PC_MARK : '') + String(fd.get('name')).trim() });
+        const res = await apiWrite('addAccessoryCategory', { name: (isPc ? PC_MARK : '') + String(fd.get('name')).trim() });
         patchCacheAdd('listAccessoryCategories', res.item);
       }, { successMsg: 'تمت إضافة النوع', onDone: function () { renderAccessories(); } });
     });
@@ -958,7 +917,7 @@ function openQuickBarcodeForCategory(catId, catName) {
       const code = input.value.trim();
       if (!code) return;
       try {
-        const data = await api('findProductByCode', { code: code });
+        const data = await findProduct(code);
         overlay.remove();
         if (data.found && data.type === 'accessory') {
           openEditAccessoryForm(data.item, function () { loadItemsTable(catId); });
@@ -1039,7 +998,7 @@ function openAddItemForm(catId, catName, prefillCode) {
       e.preventDefault();
       const fd = new FormData(e.target);
       saveInBackground(overlay, async function () {
-        const res = await api('addAccessoryItem', {
+        const res = await apiWrite('addAccessoryItem', {
           categoryId: catId, categoryName: catName, name: fd.get('name'), code: fd.get('code'),
           wholesalePrice: fd.get('wholesalePrice'), profitPrice: fd.get('profitPrice'), quantity: fd.get('quantity')
         });
@@ -1070,13 +1029,13 @@ function openSellAccessoryForm(item, catId) {
       e.preventDefault();
       const fd = new FormData(e.target);
       try {
-        const result = await api('sellAccessoryItem', {
+        const result = await apiWrite('sellAccessoryItem', {
           itemId: item.id, customerName: fd.get('customerName'), customerPhone: fd.get('customerPhone'),
           quantity: fd.get('quantity'), notes: fd.get('notes'), employee: CURRENT_USER.name
         });
         invalidateProductCaches();
         overlay.remove();
-        toast('تم تسجيل عملية البيع', 'success');
+        toast(savedMsg('تم تسجيل عملية البيع'), 'success');
         printReceipt({
           customerName: result.sale.customerName, customerPhone: result.sale.customerPhone,
           productName: result.sale.itemName + (result.sale.quantity > 1 ? ' × ' + result.sale.quantity : ''),
@@ -1173,7 +1132,7 @@ function openQuickBarcodeForDeviceType(type) {
       const code = input.value.trim();
       if (!code) return;
       try {
-        const data = await api('findProductByCode', { code: code });
+        const data = await findProduct(code);
         overlay.remove();
         if (data.found && data.type === 'device') {
           openEditDeviceForm(data.item, function () { loadDevicesTable(); });
@@ -1278,7 +1237,7 @@ function openAddDeviceForm(presetType, prefillCode) {
       const deviceType = fd.get('deviceType') === '__new__' ? fd.get('newDeviceType') : fd.get('deviceType');
       const conditionAtSubmit = deviceTab;
       saveInBackground(overlay, async function () {
-        const res = await api('addDevice', {
+        const res = await apiWrite('addDevice', {
           condition: conditionAtSubmit, name: fd.get('name'), warranty: fd.get('warranty'), code: fd.get('code'),
           deviceType: deviceType,
           wholesalePrice: fd.get('wholesalePrice'), profitPrice: fd.get('profitPrice'), quantity: fd.get('quantity')
@@ -1313,13 +1272,13 @@ function openSellDeviceForm(device) {
       e.preventDefault();
       const fd = new FormData(e.target);
       try {
-        const result = await api('sellDevice', {
+        const result = await apiWrite('sellDevice', {
           deviceId: device.id, customerName: fd.get('customerName'), customerPhone: fd.get('customerPhone'),
           quantity: fd.get('quantity'), notes: fd.get('notes'), employee: CURRENT_USER.name
         });
         invalidateProductCaches();
         overlay.remove();
-        toast('تم تسجيل بيع الجهاز', 'success');
+        toast(savedMsg('تم تسجيل بيع الجهاز'), 'success');
         printReceipt({
           customerName: result.sale.customerName, customerPhone: result.sale.customerPhone,
           productName: result.sale.deviceName + (result.sale.quantity > 1 ? ' × ' + result.sale.quantity : ''),
@@ -1399,7 +1358,7 @@ function openCashForm() {
       e.preventDefault();
       const fd = new FormData(e.target);
       saveInBackground(overlay, async function () {
-        const res = await api('addCashTransfer', {
+        const res = await apiWrite('addCashTransfer', {
           type: fd.get('type'), customerName: fd.get('customerName'), customerPhone: fd.get('customerPhone'),
           amount: fd.get('amount'), notes: fd.get('notes'), employee: CURRENT_USER.name
         });
@@ -1557,7 +1516,7 @@ function openEditAccessoryForm(item, onSaved) {
       e.preventDefault();
       const fd = new FormData(e.target);
       try {
-        await api('updateAccessoryItem', {
+        await apiWrite('updateAccessoryItem', {
           id: item.id, name: fd.get('name'), code: fd.get('code'),
           wholesalePrice: fd.get('wholesalePrice'), profitPrice: fd.get('profitPrice'), quantity: fd.get('quantity')
         });
@@ -1605,7 +1564,7 @@ function openEditDeviceForm(device, onSaved) {
       e.preventDefault();
       const fd = new FormData(e.target);
       try {
-        await api('updateDevice', {
+        await apiWrite('updateDevice', {
           id: device.id, name: fd.get('name'), code: fd.get('code'), deviceType: fd.get('deviceType'), warranty: fd.get('warranty'),
           wholesalePrice: fd.get('wholesalePrice'), profitPrice: fd.get('profitPrice'), quantity: fd.get('quantity')
         });
@@ -1772,7 +1731,7 @@ function openAddUserForm() {
       e.preventDefault();
       const fd = new FormData(e.target);
       saveInBackground(overlay, async function () {
-        await api('addUser', {
+        await apiWrite('addUser', {
           name: fd.get('name'), username: fd.get('username'), password: fd.get('password'), role: fd.get('role')
         });
         invalidateCache('listUsers');
@@ -1858,4 +1817,7 @@ function handleGlobalScan(code) {
 
 /* ============ بدء التشغيل ============ */
 
-if (CURRENT_USER) { prefetchAll(); renderApp(); } else renderLogin();
+offlineInit().then(function () {
+  if (CURRENT_USER) { prefetchAll(); renderApp(); } else renderLogin();
+  if (QUEUE.length) setTimeout(flushQueue, 1500);
+});
