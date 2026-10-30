@@ -6,7 +6,7 @@
    ============================================================ */
 
 const LIST_ACTIONS = ['listMaintenance', 'listAccessoryCategories', 'listAccessoryModels', 'listAccessoryItems', 'listAccessorySales',
-  'listDevices', 'listDeviceSales', 'listCashTransfers', 'listUsers'];
+  'listDevices', 'listDeviceSales', 'listCashTransfers', 'listReturns', 'listUsers'];
 const MAIN_LISTS = LIST_ACTIONS.filter(function (a) { return a !== 'listUsers'; });
 
 const LISTS = {};        // action -> { items: [...] }  (آخر نسخة معروفة + العمليات المحلية)
@@ -125,7 +125,7 @@ function markNetUp() {
 const OP_LABELS = {
   addMaintenance: 'إضافة صيانة', addAccessoryCategory: 'إضافة نوع إكسسوار', addAccessoryModel: 'إضافة موديل', addAccessoryItem: 'إضافة صنف',
   addDevice: 'إضافة جهاز', addCashTransfer: 'تحويل كاش', sellAccessoryItem: 'بيع إكسسوار', sellDevice: 'بيع جهاز',
-  updateAccessoryItem: 'تعديل صنف', updateDevice: 'تعديل جهاز', moveAccessoryCategory: 'نقل نوع'
+  updateAccessoryItem: 'تعديل صنف', updateDevice: 'تعديل جهاز', moveAccessoryCategory: 'نقل نوع', addReturn: 'مسترجع'
 };
 function describeOp(op) {
   const p = op.payload || {};
@@ -160,7 +160,7 @@ function savedMsg(defaultMsg) {
 
 function listFallback(action) {
   if (LISTS[action]) return LISTS[action];
-  if (action === 'listAccessoryModels') return { items: [] }; // ميزة جديدة: لسه ممكن تكون فاضية على الجهاز
+  if (action === 'listAccessoryModels' || action === 'listReturns') return { items: [] }; // ميزة جديدة: لسه ممكن تكون فاضية على الجهاز
   throw new Error('البيانات دي لسه متحملتش على الجهاز. افتح النظام مرة واحدة والنت شغال.');
 }
 
@@ -212,7 +212,7 @@ function refreshAllLists() {
 
 // الحسابات بتتحسب من القوائم المحلية، فبتشتغل أوفلاين وبتشمل العمليات اللي لسه متترفعتش
 async function accountingFromLists() {
-  const r = await Promise.all([cachedApi('listMaintenance'), cachedApi('listAccessorySales'), cachedApi('listDeviceSales')]);
+  const r = await Promise.all([cachedApi('listMaintenance'), cachedApi('listAccessorySales'), cachedApi('listDeviceSales'), cachedApi('listReturns')]);
   function rec(date, w, p, t, cat) {
     return { date: String(date).substring(0, 10), wholesale: num(w), profit: num(p), total: num(t), category: cat };
   }
@@ -220,6 +220,11 @@ async function accountingFromLists() {
   r[0].items.forEach(function (m) { records.push(rec(m.date, m.wholesaleCost, m.profitCost, m.total, 'صيانة')); });
   r[1].items.forEach(function (s) { records.push(rec(s.date, s.wholesalePrice, s.profitPrice, s.totalPrice, 'اكسسوارات')); });
   r[2].items.forEach(function (s) { records.push(rec(s.date, s.wholesalePrice, s.profitPrice, s.totalPrice, 'اجهزة')); });
+  ((r[3] || {}).items || []).forEach(function (x) {
+    const w = x.restock === 'نعم' ? -num(x.wholesalePrice) : 0;
+    const t = -num(x.refundAmount);
+    records.push(rec(x.date, w, t - w, t, x.saleType === 'device' ? 'اجهزة' : 'اكسسوارات'));
+  });
   return { ok: true, records: records };
 }
 
@@ -255,7 +260,7 @@ async function sellByCode(code, payload) {
 const ONLINE_ONLY = { addUser: 1 };
 const NEW_ID_ACTIONS = {
   addMaintenance: 1, addAccessoryCategory: 1, addAccessoryModel: 1, addAccessoryItem: 1, addDevice: 1, addCashTransfer: 1,
-  sellAccessoryItem: 1, sellDevice: 1
+  sellAccessoryItem: 1, sellDevice: 1, addReturn: 1
 };
 
 function codeExistsLocal(code, exceptId) {
@@ -304,13 +309,14 @@ function localResult(op) {
       if (codeExistsLocal(p.code)) throw new Error('الكود ده مستخدم بالفعل لمنتج تاني');
       const w = num(p.wholesalePrice), pr = num(p.profitPrice);
       return { item: { id: p.id, code: p.code, categoryId: p.categoryId, categoryName: p.categoryName, modelId: p.modelId || '', modelName: p.modelName || '', name: p.name,
-        wholesalePrice: w, profitPrice: pr, totalPrice: w + pr, quantity: num(p.quantity), dateAdded: p.date } };
+        wholesalePrice: w, profitPrice: pr, totalPrice: w + pr, quantity: num(p.quantity), dateAdded: p.date,
+        warranty: p.warranty || 'بدون ضمان', warrantyPeriod: p.warranty === 'له ضمان' ? (p.warrantyPeriod || '') : '' } };
     }
     case 'addDevice': {
       if (codeExistsLocal(p.code)) throw new Error('الكود ده مستخدم بالفعل لمنتج تاني');
       const w = num(p.wholesalePrice), pr = num(p.profitPrice);
       return { item: { id: p.id, code: p.code, deviceType: p.deviceType || 'أخرى', condition: p.condition, name: p.name,
-        wholesalePrice: w, profitPrice: pr, totalPrice: w + pr, warranty: p.warranty, quantity: num(p.quantity),
+        wholesalePrice: w, profitPrice: pr, totalPrice: w + pr, warranty: p.warranty, warrantyPeriod: p.warranty === 'له ضمان' ? (p.warrantyPeriod || '') : '', quantity: num(p.quantity),
         dateAdded: p.date } };
     }
     case 'addCashTransfer':
@@ -325,7 +331,7 @@ function localResult(op) {
         customerName: p.customerName || '', customerPhone: p.customerPhone || '', quantity: sq,
         wholesalePrice: num(item.wholesalePrice) * sq, profitPrice: num(item.profitPrice) * sq,
         unitPrice: item.totalPrice, totalPrice: num(item.totalPrice) * sq, notes: p.notes || '',
-        employee: p.employee || '', date: p.date }, remainingQuantity: qty - sq };
+        employee: p.employee || '', date: p.date, warranty: item.warranty || 'بدون ضمان', warrantyPeriod: item.warrantyPeriod || '' }, remainingQuantity: qty - sq };
     }
     case 'sellDevice': {
       const dev = findIn('listDevices', p.deviceId);
@@ -336,7 +342,28 @@ function localResult(op) {
         condition: dev.condition, warranty: dev.warranty, customerName: p.customerName || '',
         customerPhone: p.customerPhone || '', quantity: sq, wholesalePrice: num(dev.wholesalePrice) * sq,
         profitPrice: num(dev.profitPrice) * sq, unitPrice: dev.totalPrice, totalPrice: num(dev.totalPrice) * sq,
-        notes: p.notes || '', employee: p.employee || '', date: p.date }, remainingQuantity: qty - sq };
+        notes: p.notes || '', employee: p.employee || '', date: p.date, warrantyPeriod: dev.warrantyPeriod || '' }, remainingQuantity: qty - sq };
+    }
+    case 'addReturn': {
+      const isDevR = p.saleType === 'device';
+      const sale = findIn(isDevR ? 'listDeviceSales' : 'listAccessorySales', p.saleId);
+      if (!sale) throw new Error('عملية البيع الأصلية مش موجودة');
+      const sold = num(sale.quantity) || 1;
+      const already = ((LISTS.listReturns || {}).items || []).filter(function (x) {
+        return String(x.saleId) === String(p.saleId) && x.saleType === (isDevR ? 'device' : 'accessory');
+      }).reduce(function (t, x) { return t + num(x.quantity); }, 0);
+      const q = Math.max(1, num(p.quantity) || 1);
+      if (q > sold - already) throw new Error('الكمية المسترجعة (' + q + ') أكبر من المتاح للاسترجاع (' + (sold - already) + ')');
+      const wh = (num(sale.wholesalePrice) / sold) * q;
+      const refund = p.refundAmount !== undefined && p.refundAmount !== '' ? num(p.refundAmount) : num(sale.unitPrice) * q;
+      const restock = (p.restock === false || p.restock === 'false' || p.restock === 'لا') ? 'لا' : 'نعم';
+      const itemId = isDevR ? sale.deviceId : sale.itemId;
+      const cur = findIn(isDevR ? 'listDevices' : 'listAccessoryItems', itemId);
+      return { item: { id: p.id, date: p.date, saleType: isDevR ? 'device' : 'accessory', saleId: sale.id, itemId: itemId,
+        itemName: isDevR ? sale.deviceName : sale.itemName, code: sale.code || '', customerName: sale.customerName || '',
+        customerPhone: sale.customerPhone || '', quantity: q, wholesalePrice: wh, profitPrice: refund - wh, refundAmount: refund,
+        restock: restock, reason: p.reason || '', employee: p.employee || '' },
+        newQuantity: (restock === 'نعم' && cur) ? num(cur.quantity) + q : undefined };
     }
     case 'updateAccessoryItem':
     case 'updateDevice': {
@@ -352,6 +379,7 @@ function localResult(op) {
       const q = p.quantity !== undefined ? num(p.quantity) : num(cur.quantity);
       const merged = Object.assign({}, cur, { name: p.name ? p.name : cur.name, code: newCode || cur.code,
         wholesalePrice: w, profitPrice: pr, totalPrice: w + pr, quantity: q });
+      if (p.warranty) { merged.warranty = p.warranty; merged.warrantyPeriod = p.warranty === 'له ضمان' ? (p.warrantyPeriod || '') : ''; }
       if (isDev) { merged.warranty = p.warranty || cur.warranty; merged.deviceType = p.deviceType || cur.deviceType; }
       else if (p.modelId !== undefined) { merged.modelId = String(p.modelId || ''); merged.modelName = String(p.modelName || ''); }
       return { item: merged };
@@ -372,7 +400,7 @@ function localResult(op) {
 }
 
 function upsert(listName, obj) {
-  if (!LISTS[listName] && listName === 'listAccessoryModels') LISTS[listName] = { items: [] };
+  if (!LISTS[listName] && (listName === 'listAccessoryModels' || listName === 'listReturns')) LISTS[listName] = { items: [] };
   if (!LISTS[listName] || !obj) return;
   const arr = LISTS[listName].items;
   const i = arr.findIndex(function (x) { return String(x.id) === String(obj.id); });
@@ -401,6 +429,16 @@ function applyOp(op, result) {
       if (it && r.remainingQuantity !== undefined) {
         it.quantity = r.remainingQuantity;
         persistList(isDev ? 'listDevices' : 'listAccessoryItems');
+      }
+      break;
+    }
+    case 'addReturn': {
+      if (!r.item) break;
+      upsert('listReturns', r.item);
+      if (r.newQuantity !== undefined) {
+        const isDevR = r.item.saleType === 'device';
+        const it = findIn(isDevR ? 'listDevices' : 'listAccessoryItems', r.item.itemId);
+        if (it) { it.quantity = r.newQuantity; persistList(isDevR ? 'listDevices' : 'listAccessoryItems'); }
       }
       break;
     }

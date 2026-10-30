@@ -67,7 +67,7 @@ let PREFETCHED = false;
 function prefetchAll() {
   if (PREFETCHED || !CURRENT_USER) return;
   PREFETCHED = true;
-  ['listMaintenance', 'listAccessorySales', 'listDeviceSales', 'listAccessoryItems',
+  ['listMaintenance', 'listAccessorySales', 'listDeviceSales', 'listAccessoryItems', 'listReturns',
    'listDevices', 'listAccessoryCategories', 'listAccessoryModels', 'listCashTransfers'].forEach(function (a) {
     cachedApi(a).catch(function () {});
   });
@@ -171,12 +171,13 @@ function logout() {
 
 const NAV_ITEMS = [
   { id: 'dashboard', label: 'الرئيسية', icon: '🏠' },
-  { id: 'scan', label: 'بيع بالباركود', icon: '🔍' },
+  { id: 'scan', label: 'فاتورة بيع', icon: '🧾' },
   { id: 'maintenance', label: 'الصيانة', icon: '🛠️' },
   { id: 'accessories', label: 'الإكسسوارات', icon: '🎧' },
   { id: 'devices', label: 'الأجهزة', icon: '📱' },
   { id: 'cash', label: 'تحويلات الكاش', icon: '💵' },
   { id: 'inventory', label: 'المخزون', icon: '📦' },
+  { id: 'returns', label: 'المسترجع', icon: '↩️' },
   { id: 'accounting', label: 'الحسابات', icon: '📊' },
   { id: 'users', label: 'الموظفين', icon: '👤', adminOnly: true }
 ];
@@ -234,6 +235,7 @@ function renderApp() {
   const renderers = {
     dashboard: renderDashboard,
     scan: renderScan,
+    returns: renderReturns,
     maintenance: renderMaintenance,
     accessories: renderAccessories,
     devices: renderDevices,
@@ -283,13 +285,17 @@ async function renderDashboard() {
       .filter(function (r) { return String(r.date).substring(0, 10) === today; });
     const todayTotal = todaySales.reduce(function (s, r) { return s + Number(r.total || r.totalPrice || 0); }, 0);
     const todayProfit = todaySales.reduce(function (s, r) { return s + Number(r.profitCost || r.profitPrice || 0); }, 0);
+    let retToday = [];
+    try { retToday = ((await cachedApi('listReturns')).items || []).filter(function (r) { return String(r.date).substring(0, 10) === today; }); } catch (e) { /* ignore */ }
+    const retTotal = retToday.reduce(function (t, r) { return t + Number(r.refundAmount || 0); }, 0);
+    const retProfit = retToday.reduce(function (t, r) { return t + Number(r.profitPrice || 0); }, 0);
     const lowStock = accItems.items.filter(function (i) { return Number(i.quantity) <= 2; }).length
       + devices.items.filter(function (i) { return Number(i.quantity) <= 2; }).length;
 
     content().innerHTML = `
       <div class="grid grid-4">
-        <div class="card stat-card"><div class="stat-label">مبيعات اليوم</div><div class="stat-value brown">${todayTotal.toLocaleString()} ج.م</div></div>
-        <div class="card stat-card"><div class="stat-label">أرباح اليوم</div><div class="stat-value dark">${todayProfit.toLocaleString()} ج.م</div></div>
+        <div class="card stat-card"><div class="stat-label">مبيعات اليوم</div><div class="stat-value brown">${(todayTotal - retTotal).toLocaleString()} ج.م</div></div>
+        <div class="card stat-card"><div class="stat-label">أرباح اليوم</div><div class="stat-value dark">${(todayProfit + retProfit).toLocaleString()} ج.م</div></div>
         <div class="card stat-card"><div class="stat-label">عمليات اليوم</div><div class="stat-value dark">${todaySales.length}</div></div>
         <div class="card stat-card"><div class="stat-label">أصناف على وشك النفاذ</div><div class="stat-value brown">${lowStock}</div></div>
       </div>
@@ -318,115 +324,222 @@ async function renderDashboard() {
 
 let scanCustomer = { name: '', phone: '' };
 
+let scanCart = []; // [{ type: 'accessory'|'device', item, qty }]
+let scanProducts = []; // كل الأصناف والأجهزة للبحث بالاسم أو الكود
+
+async function loadScanProducts() {
+  try {
+    const r = await Promise.all([cachedApi('listAccessoryItems'), cachedApi('listDevices')]);
+    scanProducts = [];
+    (r[0].items || []).forEach(function (i) { scanProducts.push({ type: 'accessory', item: i }); });
+    (r[1].items || []).forEach(function (i) { scanProducts.push({ type: 'device', item: i }); });
+  } catch (e) { /* نكمل بالموجود */ }
+}
+
+function scanProductLabel(p) {
+  const i = p.item;
+  return p.type === 'accessory'
+    ? dispCat(i.categoryName || '') + (i.modelName ? ' / ' + i.modelName : '')
+    : [i.deviceType, i.condition].filter(Boolean).join(' - ');
+}
+
 async function renderScan() {
-  setBreadcrumb('اكتب كود المنتج أو امسحه بالباركود');
+  setBreadcrumb('فاتورة بيع: ابحث بالاسم أو الكود وضيف أكتر من صنف');
   content().innerHTML = `
-    <div class="card" style="max-width:520px">
-      <h3 style="margin-top:0">بيانات العميل</h3>
-      <div class="grid grid-2">
-        <div class="field"><label>اسم العميل</label><input type="text" id="scan-customer-name" value="${scanCustomer.name}" /></div>
-        <div class="field"><label>رقم العميل</label><input type="text" id="scan-customer-phone" value="${scanCustomer.phone}" /></div>
+    <div class="grid grid-2" style="align-items:start">
+      <div>
+        <div class="card">
+          <h3 style="margin-top:0">بيانات العميل</h3>
+          <div class="grid grid-2">
+            <div class="field"><label>اسم العميل</label><input type="text" id="scan-customer-name" value="${escHtml(scanCustomer.name)}" /></div>
+            <div class="field"><label>رقم العميل</label><input type="text" id="scan-customer-phone" value="${escHtml(scanCustomer.phone)}" /></div>
+          </div>
+        </div>
+        <div class="card" style="margin-top:16px">
+          <h3 style="margin-top:0">إضافة صنف للفاتورة</h3>
+          <div class="field">
+            <label>اكتب اسم المنتج أو الكود (Enter لو الكود مظبوط)</label>
+            <input type="text" id="scan-code-input" placeholder="مثال: شاحن، أو 123456" autocomplete="off" />
+          </div>
+          <div id="scan-suggestions"></div>
+        </div>
       </div>
-      <hr style="border:none;border-top:1px solid var(--border);margin:16px 0" />
-      <h3 style="margin-top:0">كود المنتج</h3>
-      <div class="field">
-        <label>امسح الباركود بالسكانر أو اكتب الكود يدويًا واضغط Enter</label>
-        <input type="text" id="scan-code-input" placeholder="مثال: 123456" autocomplete="off" />
+      <div class="card">
+        <h3 style="margin-top:0">الفاتورة</h3>
+        <div id="scan-cart"></div>
       </div>
-      <button class="btn btn-primary btn-block" id="scan-search-btn">بحث عن المنتج</button>
     </div>
     <div id="scan-result" style="max-width:520px;margin-top:16px"></div>
   `;
-
-  const codeInput = document.getElementById('scan-code-input');
-  codeInput.focus();
-  codeInput.addEventListener('keydown', function (e) {
+  renderScanCart();
+  const input = document.getElementById('scan-code-input');
+  input.focus();
+  input.addEventListener('input', function () { showScanSuggestions(input.value); });
+  input.addEventListener('keydown', function (e) {
     if (e.key === 'Enter') { e.preventDefault(); doScanSearch(); }
   });
-  document.getElementById('scan-search-btn').addEventListener('click', doScanSearch);
+  await loadScanProducts();
+  if (input.value) showScanSuggestions(input.value);
 }
 
 function readScanCustomer() {
-  scanCustomer.name = document.getElementById('scan-customer-name').value.trim();
-  scanCustomer.phone = document.getElementById('scan-customer-phone').value.trim();
+  const n = document.getElementById('scan-customer-name');
+  const p = document.getElementById('scan-customer-phone');
+  if (n) scanCustomer.name = n.value.trim();
+  if (p) scanCustomer.phone = p.value.trim();
+}
+
+function showScanSuggestions(q) {
+  const box = document.getElementById('scan-suggestions');
+  if (!box) return;
+  q = String(q || '').trim().toLowerCase();
+  if (!q) { box.innerHTML = ''; return; }
+  const found = scanProducts.filter(function (p) {
+    return String(p.item.name || '').toLowerCase().indexOf(q) !== -1 || String(p.item.code || '').toLowerCase().indexOf(q) !== -1;
+  }).slice(0, 8);
+  if (!found.length) { box.innerHTML = '<div class="empty-state" style="padding:12px">مفيش نتائج. لو الصنف جديد اضغط Enter وتقدر تضيفه.</div>'; return; }
+  box.innerHTML = found.map(function (p, idx) {
+    const out = Number(p.item.quantity) <= 0;
+    return '<button type="button" class="btn btn-dark btn-block" style="justify-content:space-between;margin-bottom:6px;' + (out ? 'opacity:.5' : '') + '" data-idx="' + scanProducts.indexOf(p) + '">' +
+      '<span>' + escHtml(p.item.name) + ' <small style="color:var(--text-muted)">' + escHtml(scanProductLabel(p)) + ' — ' + escHtml(p.item.code) + '</small></span>' +
+      '<span>' + Number(p.item.totalPrice).toLocaleString() + ' ج.م · متاح ' + p.item.quantity + '</span></button>';
+  }).join('');
+  box.querySelectorAll('button[data-idx]').forEach(function (btn) {
+    btn.addEventListener('click', function () { addToScanCart(scanProducts[Number(btn.getAttribute('data-idx'))]); });
+  });
 }
 
 async function doScanSearch() {
   readScanCustomer();
-  const code = document.getElementById('scan-code-input').value.trim();
+  const input = document.getElementById('scan-code-input');
+  const q = (input && input.value || '').trim();
   const resultBox = document.getElementById('scan-result');
-  if (!code) { toast('اكتب أو امسح كود المنتج الأول', 'error'); return; }
-  resultBox.innerHTML = `<div class="empty-state">جاري البحث...</div>`;
-  try {
-    const data = await findProduct(code);
-    if (data.found) {
-      renderScanFoundProduct(data, code);
-    } else {
-      renderScanNotFound(code);
-    }
-  } catch (err) {
-    resultBox.innerHTML = `<div class="empty-state">${err.message}</div>`;
-  }
+  if (!q) { toast('اكتب اسم المنتج أو الكود الأول', 'error'); return; }
+  if (resultBox) resultBox.innerHTML = '';
+  await loadScanProducts();
+  const exact = scanProducts.filter(function (p) { return String(p.item.code) === q; })[0];
+  if (exact) { addToScanCart(exact); return; }
+  const lower = q.toLowerCase();
+  const matches = scanProducts.filter(function (p) { return String(p.item.name || '').toLowerCase().indexOf(lower) !== -1; });
+  if (matches.length === 1) { addToScanCart(matches[0]); return; }
+  if (matches.length > 1) { showScanSuggestions(q); toast('في أكتر من نتيجة، اختار الصنف من القايمة', 'error'); return; }
+  renderScanNotFound(q);
 }
 
-function renderScanFoundProduct(data, code) {
-  const item = data.item;
-  const label = data.type === 'accessory' ? escHtml(dispCat(item.categoryName) + (item.modelName ? ' / ' + item.modelName : '')) : (item.deviceType + ' - ' + item.condition + ' - ' + item.warranty);
-  const resultBox = document.getElementById('scan-result');
-  const outOfStock = Number(item.quantity) <= 0;
-  resultBox.innerHTML = `
-    <div class="card">
-      <div class="badge badge-success">تم إيجاد المنتج</div>
-      <h3>${item.name}</h3>
-      <p style="color:#888;margin:4px 0">${label} — الكود: ${item.code}</p>
-      <div class="row" style="display:flex;justify-content:space-between;font-size:15px;margin:10px 0">
-        <span>سعر القطعة</span><strong>${Number(item.totalPrice).toLocaleString()} ج.م</strong>
-      </div>
-      <div class="row" style="display:flex;justify-content:space-between;font-size:14px;color:#888;margin-bottom:10px">
-        <span>الكمية المتاحة</span><span>${item.quantity}</span>
-      </div>
-      ${outOfStock
-        ? `<div class="error-msg">الكمية غير متاحة في المخزون</div>`
-        : `<div class="field"><label>الكمية المطلوبة</label>
-             <input type="number" id="scan-sell-qty" value="1" min="1" max="${item.quantity}" /></div>
-           <div class="field"><label>ملاحظات (اختياري)</label><textarea id="scan-sell-notes" rows="2" placeholder="أي ملاحظات عن العملية..."></textarea></div>
-           <button class="btn btn-primary btn-block" id="confirm-scan-sell">تأكيد البيع للعميل</button>`}
+function addToScanCart(p) {
+  if (!p) return;
+  if (Number(p.item.quantity) <= 0) { toast('الصنف ده غير متاح في المخزون', 'error'); return; }
+  const ex = scanCart.filter(function (c) { return c.type === p.type && String(c.item.id) === String(p.item.id); })[0];
+  if (ex) {
+    if (ex.qty + 1 > Number(p.item.quantity)) { toast('وصلت لأقصى كمية متاحة (' + p.item.quantity + ')', 'error'); return; }
+    ex.qty += 1;
+  } else {
+    scanCart.push({ type: p.type, item: p.item, qty: 1 });
+  }
+  const input = document.getElementById('scan-code-input');
+  if (input) { input.value = ''; input.focus(); }
+  const sg = document.getElementById('scan-suggestions'); if (sg) sg.innerHTML = '';
+  const rb = document.getElementById('scan-result'); if (rb) rb.innerHTML = '';
+  renderScanCart();
+}
+
+function scanCartTotal() {
+  return scanCart.reduce(function (t, c) { return t + Number(c.item.totalPrice) * c.qty; }, 0);
+}
+
+function renderScanCart() {
+  const box = document.getElementById('scan-cart');
+  if (!box) return;
+  if (!scanCart.length) { box.innerHTML = '<div class="empty-state">الفاتورة فاضية، ضيف صنف من البحث</div>'; return; }
+  box.innerHTML = `
+    <div class="table-wrap"><table>
+      <thead><tr><th>الصنف</th><th>السعر</th><th>الكمية</th><th>الإجمالي</th><th></th></tr></thead>
+      <tbody>
+        ${scanCart.map(function (c, i) {
+          return '<tr><td>' + escHtml(c.item.name) + '</td>' +
+            '<td>' + Number(c.item.totalPrice).toLocaleString() + '</td>' +
+            '<td><input type="number" min="1" max="' + c.item.quantity + '" value="' + c.qty + '" data-qty="' + i + '" style="width:64px;padding:6px;border-radius:6px;border:1px solid var(--border);background:var(--charcoal-3);color:var(--text)" /></td>' +
+            '<td>' + (Number(c.item.totalPrice) * c.qty).toLocaleString() + '</td>' +
+            '<td><button type="button" class="link-btn" data-del="' + i + '">حذف</button></td></tr>';
+        }).join('')}
+      </tbody>
+    </table></div>
+    <div style="display:flex;justify-content:space-between;font-size:18px;font-weight:800;margin:14px 0">
+      <span>الإجمالي</span><span class="stat-value brown" style="font-size:20px">${scanCartTotal().toLocaleString()} ج.م</span>
+    </div>
+    <div class="grid grid-2">
+      <button class="btn btn-primary" id="scan-checkout">تأكيد البيع وطباعة</button>
+      <button class="btn btn-outline" id="scan-clear">مسح الفاتورة</button>
     </div>
   `;
-  if (!outOfStock) {
-    document.getElementById('confirm-scan-sell').addEventListener('click', async function () {
-      readScanCustomer();
-      if (!scanCustomer.name || !scanCustomer.phone) {
-        toast('محتاج اسم العميل ورقمه الأول', 'error'); return;
-      }
-      const qty = document.getElementById('scan-sell-qty').value;
-      const notesEl = document.getElementById('scan-sell-notes');
-      try {
-        const result = await sellByCode(code, {
-          code: code, customerName: scanCustomer.name, customerPhone: scanCustomer.phone,
-          quantity: qty, notes: notesEl ? notesEl.value : '', employee: CURRENT_USER.name
-        });
-        invalidateProductCaches();
-        toast(savedMsg('تم تسجيل عملية البيع'), 'success');
-        printReceipt({
-          customerName: scanCustomer.name, customerPhone: scanCustomer.phone,
-          productName: (result.sale.itemName || result.sale.deviceName) + (result.sale.quantity > 1 ? ' × ' + result.sale.quantity : ''),
-          employee: CURRENT_USER.name, total: result.sale.totalPrice
-        });
-        document.getElementById('scan-code-input').value = '';
-        document.getElementById('scan-result').innerHTML = '';
-        document.getElementById('scan-code-input').focus();
-      } catch (err) { toast(err.message, 'error'); }
+  box.querySelectorAll('input[data-qty]').forEach(function (inp) {
+    inp.addEventListener('change', function () {
+      const c = scanCart[Number(inp.getAttribute('data-qty'))];
+      let v = Math.floor(Number(inp.value) || 1);
+      v = Math.max(1, Math.min(v, Number(c.item.quantity)));
+      c.qty = v;
+      renderScanCart();
+    });
+  });
+  box.querySelectorAll('button[data-del]').forEach(function (btn) {
+    btn.addEventListener('click', function () { scanCart.splice(Number(btn.getAttribute('data-del')), 1); renderScanCart(); });
+  });
+  document.getElementById('scan-clear').addEventListener('click', function () { scanCart = []; renderScanCart(); });
+  document.getElementById('scan-checkout').addEventListener('click', checkoutScanCart);
+}
+
+let SCAN_CHECKOUT_BUSY = false;
+async function checkoutScanCart() {
+  if (SCAN_CHECKOUT_BUSY) return;
+  readScanCustomer();
+  if (!scanCart.length) { toast('الفاتورة فاضية', 'error'); return; }
+  if (!scanCustomer.name || !scanCustomer.phone) { toast('محتاج اسم العميل ورقمه الأول', 'error'); return; }
+  SCAN_CHECKOUT_BUSY = true;
+  const btn = document.getElementById('scan-checkout');
+  if (btn) { btn.disabled = true; btn.textContent = 'جاري التسجيل...'; }
+  const sold = [];
+  let failure = null;
+  const lines = scanCart.slice();
+  for (let i = 0; i < lines.length; i++) {
+    const c = lines[i];
+    try {
+      const base = { customerName: scanCustomer.name, customerPhone: scanCustomer.phone, quantity: c.qty, notes: '', employee: CURRENT_USER.name };
+      const result = c.type === 'accessory'
+        ? await apiWrite('sellAccessoryItem', Object.assign({ itemId: c.item.id }, base))
+        : await apiWrite('sellDevice', Object.assign({ deviceId: c.item.id }, base));
+      sold.push({ name: c.item.name, qty: c.qty, unit: Number(c.item.totalPrice), total: Number(result.sale.totalPrice), warranty: result.sale.warranty === 'له ضمان' ? warrantyLabel(result.sale) : '' });
+      scanCart = scanCart.filter(function (x) { return x !== c; });
+    } catch (err) {
+      failure = { name: c.item.name, message: err.message };
+      break;
+    }
+  }
+  SCAN_CHECKOUT_BUSY = false;
+  invalidateProductCaches();
+  if (sold.length) {
+    toast(savedMsg(failure ? 'اتسجل جزء من الفاتورة' : 'تم تسجيل الفاتورة'), failure ? 'error' : 'success');
+    printReceipt({
+      customerName: scanCustomer.name, customerPhone: scanCustomer.phone, employee: CURRENT_USER.name,
+      items: sold, total: sold.reduce(function (t, x) { return t + x.total; }, 0)
     });
   }
+  if (failure) toast('فشل بيع "' + failure.name + '": ' + failure.message + '. باقي الأصناف لسه في الفاتورة.', 'error');
+  await loadScanProducts();
+  // نحدّث الكميات المتاحة في السلة بعد البيع
+  scanCart.forEach(function (c) {
+    const p = scanProducts.filter(function (x) { return x.type === c.type && String(x.item.id) === String(c.item.id); })[0];
+    if (p) { c.item = p.item; c.qty = Math.min(c.qty, Math.max(1, Number(p.item.quantity))); }
+  });
+  if (!failure) { scanCustomer = { name: '', phone: '' }; }
+  renderScan();
 }
 
 function renderScanNotFound(code) {
   const resultBox = document.getElementById('scan-result');
   resultBox.innerHTML = `
     <div class="card">
-      <div class="badge badge-danger">مفيش منتج بالكود ده</div>
-      <p style="color:#888">الكود <strong>${code}</strong> مش مسجل في النظام. تقدر تضيفه دلوقتي كمنتج جديد وهيتباع فورًا للعميل.</p>
+      <div class="badge badge-danger">مفيش منتج بالاسم أو الكود ده</div>
+      <p style="color:#888"><strong>${escHtml(code)}</strong> مش مسجل في النظام. تقدر تضيفه دلوقتي كمنتج جديد.</p>
       <div class="grid grid-2">
         <button class="btn btn-dark" id="scan-add-accessory">إضافة كإكسسوار</button>
         <button class="btn btn-dark" id="scan-add-device">إضافة كجهاز</button>
@@ -434,11 +547,17 @@ function renderScanNotFound(code) {
     </div>
   `;
   document.getElementById('scan-add-accessory').addEventListener('click', function () {
-    openScanAddAccessoryForm(code, function () { toast('تمت إضافة المنتج، جاري البيع...', 'success'); sellScannedProductNow(code); });
+    openScanAddAccessoryForm(code, function () { toast('تمت إضافة المنتج', 'success'); addScannedByCode(code); });
   });
   document.getElementById('scan-add-device').addEventListener('click', function () {
-    openScanAddDeviceForm(code, function () { toast('تمت إضافة الجهاز، جاري البيع...', 'success'); sellScannedProductNow(code); });
+    openScanAddDeviceForm(code, function () { toast('تمت إضافة الجهاز', 'success'); addScannedByCode(code); });
   });
+}
+
+async function addScannedByCode(code) {
+  await loadScanProducts();
+  const p = scanProducts.filter(function (x) { return String(x.item.code) === String(code); })[0];
+  if (p) addToScanCart(p); else renderScan();
 }
 
 async function openScanAddAccessoryForm(code, onSaved) {
@@ -473,6 +592,7 @@ async function openScanAddAccessoryForm(code, onSaved) {
         <div class="field"><label>سعر الجملة</label><input type="number" name="wholesalePrice" value="0" required /></div>
         <div class="field"><label>سعر المكسب</label><input type="number" name="profitPrice" value="0" required /></div>
       </div>
+      ${warrantyFieldsHtml('بدون ضمان', '')}
       <div class="field"><label>الكمية</label><input type="number" name="quantity" value="1" required /></div>
       <div class="modal-actions">
         <button type="submit" class="btn btn-primary">حفظ المنتج</button>
@@ -480,6 +600,7 @@ async function openScanAddAccessoryForm(code, onSaved) {
       </div>
     </form>
   `, function (el) {
+    bindWarrantyFields(el);
     const catSelect = el.querySelector('[name=categoryId]');
     const modelSelect = el.querySelector('[name=modelId]');
     catSelect.addEventListener('change', function () {
@@ -496,6 +617,7 @@ async function openScanAddAccessoryForm(code, onSaved) {
     el.querySelector('#scan-item-form').addEventListener('submit', function (e) {
       e.preventDefault();
       const fd = new FormData(e.target);
+      let wr; try { wr = readWarranty(fd); } catch (err) { toast(err.message, 'error'); return; }
       saveInBackground(overlay, async function () {
         let categoryId = fd.get('categoryId');
         let categoryName;
@@ -510,6 +632,7 @@ async function openScanAddAccessoryForm(code, onSaved) {
         const res = await apiWrite('addAccessoryItem', {
           code: code || fd.get('code'), categoryId: categoryId, categoryName: categoryName, name: fd.get('name'),
           modelId: fd.get('modelId') || '', modelName: accModelName(fd.get('modelId')),
+          warranty: wr.warranty, warrantyPeriod: wr.warrantyPeriod,
           wholesalePrice: fd.get('wholesalePrice'), profitPrice: fd.get('profitPrice'), quantity: fd.get('quantity')
         });
         patchCacheAdd('listAccessoryItems', res.item);
@@ -539,13 +662,7 @@ function openScanAddDeviceForm(code, onSaved) {
       </div>
       <div class="field"><label>اسم الجهاز</label><input name="name" required /></div>
       ${code ? '' : '<div class="field"><label>كود المنتج (اختياري)</label><input name="code" placeholder="اختياري - يتولد تلقائي" /></div>'}
-      <div class="field">
-        <label>الضمان</label>
-        <select name="warranty" required>
-          <option value="له ضمان">له ضمان</option>
-          <option value="بدون ضمان">بدون ضمان</option>
-        </select>
-      </div>
+      ${warrantyFieldsHtml('بدون ضمان', '')}
       <div class="grid grid-2">
         <div class="field"><label>سعر الجملة</label><input type="number" name="wholesalePrice" value="0" required /></div>
         <div class="field"><label>سعر المكسب</label><input type="number" name="profitPrice" value="0" required /></div>
@@ -557,6 +674,7 @@ function openScanAddDeviceForm(code, onSaved) {
       </div>
     </form>
   `, function (el) {
+    bindWarrantyFields(el);
     const typeSelect = el.querySelector('[name=deviceType]');
     typeSelect.addEventListener('change', function () {
       el.querySelector('#new-type-field').classList.toggle('hidden', typeSelect.value !== '__new__');
@@ -570,9 +688,10 @@ function openScanAddDeviceForm(code, onSaved) {
       e.preventDefault();
       const fd = new FormData(e.target);
       const deviceType = fd.get('deviceType') === '__new__' ? fd.get('newDeviceType') : fd.get('deviceType');
+      let wr; try { wr = readWarranty(fd); } catch (err) { toast(err.message, 'error'); return; }
       saveInBackground(overlay, async function () {
         const res = await apiWrite('addDevice', {
-          code: code || fd.get('code'), condition: fd.get('condition'), name: fd.get('name'), warranty: fd.get('warranty'),
+          code: code || fd.get('code'), condition: fd.get('condition'), name: fd.get('name'), warranty: wr.warranty, warrantyPeriod: wr.warrantyPeriod,
           deviceType: deviceType,
           wholesalePrice: fd.get('wholesalePrice'), profitPrice: fd.get('profitPrice'), quantity: fd.get('quantity')
         });
@@ -580,27 +699,6 @@ function openScanAddDeviceForm(code, onSaved) {
       }, { successMsg: 'تمت إضافة الجهاز بنجاح', onDone: function () { if (onSaved) onSaved(); } });
     });
   });
-}
-
-async function sellScannedProductNow(code) {
-  if (!scanCustomer.name || !scanCustomer.phone) {
-    toast('المنتج اتضاف بنجاح، ادخل بيانات العميل وابحث بنفس الكود تاني عشان تكمل البيع', 'success');
-    renderScan();
-    return;
-  }
-  try {
-    const result = await sellByCode(code, {
-      code: code, customerName: scanCustomer.name, customerPhone: scanCustomer.phone, employee: CURRENT_USER.name
-    });
-    invalidateProductCaches();
-    toast(savedMsg('تم البيع بنجاح'), 'success');
-    printReceipt({
-      customerName: scanCustomer.name, customerPhone: scanCustomer.phone,
-      productName: result.sale.itemName || result.sale.deviceName,
-      employee: CURRENT_USER.name, total: result.sale.totalPrice
-    });
-    renderScan();
-  } catch (err) { toast(err.message, 'error'); }
 }
 
 /* ============ الصيانة ============ */
@@ -1024,12 +1122,12 @@ async function loadItemsTable(catId) {
     if (search) rows = rows.filter(function (i) { return i.name.toLowerCase().includes(search.toLowerCase()); });
     document.getElementById('items-table').innerHTML = rows.length ? `
       <table>
-        <thead><tr><th>الكود</th><th>الاسم</th><th>سعر الجملة</th><th>سعر المكسب</th><th>الإجمالي</th><th>الكمية</th><th>تاريخ الإضافة</th><th></th><th></th></tr></thead>
+        <thead><tr><th>الكود</th><th>الاسم</th><th>الضمان</th><th>سعر الجملة</th><th>سعر المكسب</th><th>الإجمالي</th><th>الكمية</th><th>تاريخ الإضافة</th><th></th><th></th></tr></thead>
         <tbody>
           ${rows.map(function (i) {
             return `<tr>
               <td><span class="badge badge-slate">${i.code || '-'}</span></td>
-              <td>${i.name}</td><td>${Number(i.wholesalePrice).toLocaleString()}</td>
+              <td>${i.name}</td><td><span class="badge ${i.warranty === 'له ضمان' ? 'badge-success' : 'badge-slate'}">${escHtml(warrantyLabel(i))}</span></td><td>${Number(i.wholesalePrice).toLocaleString()}</td>
               <td>${Number(i.profitPrice).toLocaleString()}</td><td><strong>${Number(i.totalPrice).toLocaleString()}</strong></td>
               <td>${i.quantity <= 2 ? '<span class="badge badge-danger">' + i.quantity + '</span>' : i.quantity}</td>
               <td>${i.dateAdded}</td>
@@ -1066,6 +1164,7 @@ function openAddItemForm(catId, catName, prefillCode) {
         <div class="field"><label>سعر الجملة</label><input type="number" name="wholesalePrice" value="0" required /></div>
         <div class="field"><label>سعر المكسب</label><input type="number" name="profitPrice" value="0" required /></div>
       </div>
+      ${warrantyFieldsHtml('بدون ضمان', '')}
       <div class="field"><label>الكمية</label><input type="number" name="quantity" value="1" required /></div>
       <div class="modal-actions">
         <button type="submit" class="btn btn-primary">حفظ</button>
@@ -1073,6 +1172,7 @@ function openAddItemForm(catId, catName, prefillCode) {
       </div>
     </form>
   `, function (el) {
+    bindWarrantyFields(el);
     const codeField = el.querySelector('[name=code]');
     if (codeField) codeField.addEventListener('keydown', function (e) {
       if (e.key === 'Enter') { e.preventDefault(); el.querySelector('[name=wholesalePrice]').focus(); }
@@ -1081,9 +1181,10 @@ function openAddItemForm(catId, catName, prefillCode) {
     el.querySelector('#item-form').addEventListener('submit', function (e) {
       e.preventDefault();
       const fd = new FormData(e.target);
+      let wr; try { wr = readWarranty(fd); } catch (err) { toast(err.message, 'error'); return; }
       saveInBackground(overlay, async function () {
         const res = await apiWrite('addAccessoryItem', {
-          categoryId: catId, categoryName: catName, name: fd.get('name'), code: fd.get('code'),
+          warranty: wr.warranty, warrantyPeriod: wr.warrantyPeriod, categoryId: catId, categoryName: catName, name: fd.get('name'), code: fd.get('code'),
           modelId: currentModelFilter || '', modelName: currentModelName || '',
           wholesalePrice: fd.get('wholesalePrice'), profitPrice: fd.get('profitPrice'), quantity: fd.get('quantity')
         });
@@ -1248,7 +1349,7 @@ async function loadDevicesTable() {
             return `<tr>
               <td><span class="badge badge-slate">${d.code || '-'}</span></td>
               <td>${d.name}</td>
-              <td><span class="badge ${d.warranty === 'له ضمان' ? 'badge-success' : 'badge-slate'}">${d.warranty}</span></td>
+              <td><span class="badge ${d.warranty === 'له ضمان' ? 'badge-success' : 'badge-slate'}">${escHtml(warrantyLabel(d))}</span></td>
               <td>${Number(d.wholesalePrice).toLocaleString()}</td><td>${Number(d.profitPrice).toLocaleString()}</td>
               <td><strong>${Number(d.totalPrice).toLocaleString()}</strong></td>
               <td>${d.quantity <= 2 ? '<span class="badge badge-danger">' + d.quantity + '</span>' : d.quantity}</td>
@@ -1289,13 +1390,7 @@ function openAddDeviceForm(presetType, prefillCode) {
         </select>
       </div>
       <div class="field hidden" id="new-type-field"><label>اسم النوع الجديد</label><input name="newDeviceType" /></div>
-      <div class="field">
-        <label>الضمان</label>
-        <select name="warranty" required>
-          <option value="له ضمان">له ضمان</option>
-          <option value="بدون ضمان">بدون ضمان</option>
-        </select>
-      </div>
+      ${warrantyFieldsHtml('بدون ضمان', '')}
       <div class="grid grid-2">
         <div class="field"><label>سعر الجملة</label><input type="number" name="wholesalePrice" value="0" required /></div>
         <div class="field"><label>سعر المكسب</label><input type="number" name="profitPrice" value="0" required /></div>
@@ -1307,6 +1402,7 @@ function openAddDeviceForm(presetType, prefillCode) {
       </div>
     </form>
   `, function (el) {
+    bindWarrantyFields(el);
     const typeSelect = el.querySelector('[name=deviceType]');
     typeSelect.addEventListener('change', function () {
       el.querySelector('#new-type-field').classList.toggle('hidden', typeSelect.value !== '__new__');
@@ -1321,9 +1417,10 @@ function openAddDeviceForm(presetType, prefillCode) {
       const fd = new FormData(e.target);
       const deviceType = fd.get('deviceType') === '__new__' ? fd.get('newDeviceType') : fd.get('deviceType');
       const conditionAtSubmit = deviceTab;
+      let wr; try { wr = readWarranty(fd); } catch (err) { toast(err.message, 'error'); return; }
       saveInBackground(overlay, async function () {
         const res = await apiWrite('addDevice', {
-          condition: conditionAtSubmit, name: fd.get('name'), warranty: fd.get('warranty'), code: fd.get('code'),
+          condition: conditionAtSubmit, name: fd.get('name'), warranty: wr.warranty, warrantyPeriod: wr.warrantyPeriod, code: fd.get('code'),
           deviceType: deviceType,
           wholesalePrice: fd.get('wholesalePrice'), profitPrice: fd.get('profitPrice'), quantity: fd.get('quantity')
         });
@@ -1556,7 +1653,7 @@ async function loadInventoryBody(mode) {
             <thead><tr><th>الكود</th><th>النوع</th><th>الاسم</th><th>الحالة</th><th>الضمان</th><th>الإجمالي</th><th>الكمية</th><th>تاريخ الإضافة</th><th></th></tr></thead>
             <tbody>
               ${data.items.map(function (d) {
-                return `<tr><td><span class="badge badge-slate">${d.code || '-'}</span></td><td>${d.deviceType || '-'}</td><td>${d.name}</td><td>${d.condition}</td><td>${d.warranty}</td>
+                return `<tr><td><span class="badge badge-slate">${d.code || '-'}</span></td><td>${d.deviceType || '-'}</td><td>${d.name}</td><td>${d.condition}</td><td>${escHtml(warrantyLabel(d))}</td>
                 <td>${Number(d.totalPrice).toLocaleString()}</td>
                 <td>${d.quantity <= 2 ? '<span class="badge badge-danger">' + d.quantity + '</span>' : d.quantity}</td>
                 <td>${d.dateAdded}</td>
@@ -1596,6 +1693,7 @@ function openEditAccessoryForm(item, onSaved) {
           ms.map(function (m) { return '<option value="' + escHtml(m.id) + '"' + (String(m.id) === String(item.modelId || '') ? ' selected' : '') + '>' + escHtml(m.name) + '</option>'; }).join('') +
           '</select></div>';
       })()}
+      ${warrantyFieldsHtml(item.warranty, item.warrantyPeriod)}
       <div class="field"><label>الكمية</label><input type="number" name="quantity" value="${item.quantity}" required /></div>
       <div class="modal-actions">
         <button type="submit" class="btn btn-primary">حفظ التعديلات</button>
@@ -1603,13 +1701,15 @@ function openEditAccessoryForm(item, onSaved) {
       </div>
     </form>
   `, function (el) {
+    bindWarrantyFields(el);
     el.querySelector('#cancel-btn').addEventListener('click', function () { overlay.remove(); });
     el.querySelector('#edit-acc-form').addEventListener('submit', async function (e) {
       e.preventDefault();
       const fd = new FormData(e.target);
       try {
+        const wr = readWarranty(fd);
         await apiWrite('updateAccessoryItem', {
-          id: item.id, name: fd.get('name'), code: fd.get('code'),
+          warranty: wr.warranty, warrantyPeriod: wr.warrantyPeriod, id: item.id, name: fd.get('name'), code: fd.get('code'),
           modelId: fd.get('modelId') === null ? undefined : fd.get('modelId'),
           modelName: fd.get('modelId') === null ? undefined : accModelName(fd.get('modelId')),
           wholesalePrice: fd.get('wholesalePrice'), profitPrice: fd.get('profitPrice'), quantity: fd.get('quantity')
@@ -1635,13 +1735,7 @@ function openEditDeviceForm(device, onSaved) {
             .map(function (t) { return `<option value="${t}" ${t === device.deviceType ? 'selected' : ''}>${t}</option>`; }).join('')}
         </select>
       </div>
-      <div class="field">
-        <label>الضمان</label>
-        <select name="warranty" required>
-          <option value="له ضمان" ${device.warranty === 'له ضمان' ? 'selected' : ''}>له ضمان</option>
-          <option value="بدون ضمان" ${device.warranty === 'بدون ضمان' ? 'selected' : ''}>بدون ضمان</option>
-        </select>
-      </div>
+      ${warrantyFieldsHtml(device.warranty, device.warrantyPeriod)}
       <div class="grid grid-2">
         <div class="field"><label>سعر الجملة</label><input type="number" name="wholesalePrice" value="${device.wholesalePrice}" required /></div>
         <div class="field"><label>سعر المكسب</label><input type="number" name="profitPrice" value="${device.profitPrice}" required /></div>
@@ -1653,13 +1747,15 @@ function openEditDeviceForm(device, onSaved) {
       </div>
     </form>
   `, function (el) {
+    bindWarrantyFields(el);
     el.querySelector('#cancel-btn').addEventListener('click', function () { overlay.remove(); });
     el.querySelector('#edit-dev-form').addEventListener('submit', async function (e) {
       e.preventDefault();
       const fd = new FormData(e.target);
       try {
+        const wr = readWarranty(fd);
         await apiWrite('updateDevice', {
-          id: device.id, name: fd.get('name'), code: fd.get('code'), deviceType: fd.get('deviceType'), warranty: fd.get('warranty'),
+          id: device.id, name: fd.get('name'), code: fd.get('code'), deviceType: fd.get('deviceType'), warranty: wr.warranty, warrantyPeriod: wr.warrantyPeriod,
           wholesalePrice: fd.get('wholesalePrice'), profitPrice: fd.get('profitPrice'), quantity: fd.get('quantity')
         });
         invalidateCache('listDevices');
@@ -1834,6 +1930,175 @@ function openAddUserForm() {
   });
 }
 
+/* ============ الضمان (مشترك بين كل فورمات المنتجات) ============ */
+
+const WARRANTY_UNITS = ['يوم', 'شهر', 'سنة'];
+
+function parseWarrantyPeriod(txt) {
+  const m = String(txt || '').trim().match(/^(\d+)\s*(\S+)$/);
+  return m ? { n: m[1], u: m[2] } : { n: '', u: 'شهر' };
+}
+
+function warrantyFieldsHtml(warranty, period) {
+  const has = warranty === 'له ضمان';
+  const p = parseWarrantyPeriod(period);
+  return `<div class="field">
+      <label>الضمان</label>
+      <select name="warranty" data-warranty-select>
+        <option value="بدون ضمان" ${has ? '' : 'selected'}>بدون ضمان</option>
+        <option value="له ضمان" ${has ? 'selected' : ''}>بضمان</option>
+      </select>
+    </div>
+    <div class="field ${has ? '' : 'hidden'}" data-warranty-period>
+      <label>مدة الضمان</label>
+      <div class="grid grid-2">
+        <input type="number" name="warrantyNum" min="1" value="${escHtml(p.n)}" placeholder="مثال: 6" />
+        <select name="warrantyUnit">${WARRANTY_UNITS.map(function (u) { return '<option value="' + u + '"' + (u === p.u ? ' selected' : '') + '>' + u + '</option>'; }).join('')}</select>
+      </div>
+    </div>`;
+}
+
+function bindWarrantyFields(el) {
+  const sel = el.querySelector('[data-warranty-select]');
+  const box = el.querySelector('[data-warranty-period]');
+  if (!sel || !box) return;
+  sel.addEventListener('change', function () {
+    box.classList.toggle('hidden', sel.value !== 'له ضمان');
+    if (sel.value === 'له ضمان') { const n = box.querySelector('[name=warrantyNum]'); if (n) n.focus(); }
+  });
+}
+
+// بيرجّع { warranty, warrantyPeriod } من الفورم، أو بيرمي خطأ لو اخترت "بضمان" وماكتبتش المدة
+function readWarranty(fd) {
+  const w = fd.get('warranty') === 'له ضمان' ? 'له ضمان' : 'بدون ضمان';
+  if (w !== 'له ضمان') return { warranty: w, warrantyPeriod: '' };
+  const n = Math.floor(Number(fd.get('warrantyNum')));
+  if (!n || n < 1) throw new Error('اكتب مدة الضمان (رقم أكبر من صفر)');
+  return { warranty: w, warrantyPeriod: n + ' ' + (fd.get('warrantyUnit') || 'شهر') };
+}
+
+function warrantyLabel(o) {
+  return o && o.warranty === 'له ضمان' ? ('بضمان' + (o.warrantyPeriod ? ' ' + o.warrantyPeriod : '')) : 'بدون ضمان';
+}
+
+/* ============ المسترجع ============ */
+
+let returnsSearch = '';
+
+async function renderReturns() {
+  setBreadcrumb('استرجاع منتج اتباع وإرجاعه للمخزون');
+  content().innerHTML = `
+    <div class="card">
+      <h3 style="margin-top:0">ابحث عن عملية البيع</h3>
+      <div class="field" style="margin-bottom:0">
+        <label>اسم العميل أو رقمه أو اسم المنتج أو الكود</label>
+        <input type="text" id="returns-search" value="${escHtml(returnsSearch)}" placeholder="مثال: أحمد، أو 0100..، أو شاحن" autocomplete="off" />
+      </div>
+      <div id="returns-sales" style="margin-top:14px"></div>
+    </div>
+    <div class="card" style="margin-top:16px">
+      <h3 style="margin-top:0">سجل المسترجع</h3>
+      <div id="returns-log"></div>
+    </div>`;
+  const input = document.getElementById('returns-search');
+  input.focus();
+  input.addEventListener('input', function () { returnsSearch = input.value; drawReturnsSales(); });
+  await Promise.all([cachedApi('listAccessorySales'), cachedApi('listDeviceSales'), cachedApi('listReturns')].map(function (p) { return p.catch(function () {}); }));
+  drawReturnsSales();
+  drawReturnsLog();
+}
+
+function returnedQtyForSale(type, saleId) {
+  return ((LISTS.listReturns || {}).items || []).filter(function (r) {
+    return r.saleType === type && String(r.saleId) === String(saleId);
+  }).reduce(function (t, r) { return t + (Number(r.quantity) || 0); }, 0);
+}
+
+function drawReturnsSales() {
+  const box = document.getElementById('returns-sales');
+  if (!box) return;
+  const q = returnsSearch.trim().toLowerCase();
+  if (!q) { box.innerHTML = '<div class="empty-state" style="padding:14px">اكتب في خانة البحث عشان تظهر عمليات البيع</div>'; return; }
+  const all = []
+    .concat(((LISTS.listAccessorySales || {}).items || []).map(function (s) { return { type: 'accessory', sale: s, name: s.itemName }; }))
+    .concat(((LISTS.listDeviceSales || {}).items || []).map(function (s) { return { type: 'device', sale: s, name: s.deviceName }; }));
+  const found = all.filter(function (x) {
+    const s = x.sale;
+    return [x.name, s.customerName, s.customerPhone, s.code].some(function (v) { return String(v || '').toLowerCase().indexOf(q) !== -1; });
+  }).sort(function (a, b) { return String(b.sale.date).localeCompare(String(a.sale.date)); }).slice(0, 30);
+  if (!found.length) { box.innerHTML = '<div class="empty-state" style="padding:14px">مفيش عمليات بيع مطابقة</div>'; return; }
+  box.innerHTML = '<div class="table-wrap"><table><thead><tr><th>التاريخ</th><th>المنتج</th><th>العميل</th><th>الكمية</th><th>الإجمالي</th><th>الضمان</th><th></th></tr></thead><tbody>' +
+    found.map(function (x, i) {
+      const s = x.sale, left = (Number(s.quantity) || 1) - returnedQtyForSale(x.type, s.id);
+      return '<tr><td>' + escHtml(String(s.date).substring(0, 16)) + '</td><td>' + escHtml(x.name) + '</td><td>' + escHtml(s.customerName || '-') + '<br><small style="color:var(--text-muted)">' + escHtml(s.customerPhone || '') + '</small></td>' +
+        '<td>' + s.quantity + (left < s.quantity ? ' <span class="badge badge-danger">اترجع ' + (s.quantity - left) + '</span>' : '') + '</td>' +
+        '<td>' + Number(s.totalPrice).toLocaleString() + '</td><td>' + escHtml(warrantyLabel(s)) + '</td>' +
+        '<td>' + (left > 0 ? '<button class="btn btn-primary btn-sm" data-ret="' + i + '">استرجاع</button>' : '<span class="badge badge-slate">اترجع بالكامل</span>') + '</td></tr>';
+    }).join('') + '</tbody></table></div>';
+  box.querySelectorAll('[data-ret]').forEach(function (b) {
+    b.addEventListener('click', function () { openReturnForm(found[Number(b.getAttribute('data-ret'))]); });
+  });
+}
+
+function drawReturnsLog() {
+  const box = document.getElementById('returns-log');
+  if (!box) return;
+  const rows = ((LISTS.listReturns || {}).items || []).slice().sort(function (a, b) { return String(b.date).localeCompare(String(a.date)); }).slice(0, 50);
+  if (!rows.length) { box.innerHTML = '<div class="empty-state" style="padding:14px">لسه مفيش مسترجع</div>'; return; }
+  box.innerHTML = '<div class="table-wrap"><table><thead><tr><th>التاريخ</th><th>المنتج</th><th>العميل</th><th>الكمية</th><th>المبلغ المرجّع</th><th>رجع للمخزون؟</th><th>السبب</th><th>الموظف</th></tr></thead><tbody>' +
+    rows.map(function (r) {
+      return '<tr><td>' + escHtml(String(r.date).substring(0, 16)) + '</td><td>' + escHtml(r.itemName) + '</td><td>' + escHtml(r.customerName || '-') + '</td><td>' + r.quantity + '</td>' +
+        '<td>' + Number(r.refundAmount).toLocaleString() + ' ج.م</td><td>' + (r.restock === 'نعم' ? '<span class="badge badge-success">نعم</span>' : '<span class="badge badge-danger">لا</span>') + '</td>' +
+        '<td>' + escHtml(r.reason || '-') + '</td><td>' + escHtml(r.employee || '-') + '</td></tr>';
+    }).join('') + '</tbody></table></div>';
+}
+
+function openReturnForm(x) {
+  const s = x.sale, left = (Number(s.quantity) || 1) - returnedQtyForSale(x.type, s.id);
+  const unit = Number(s.unitPrice) || (Number(s.totalPrice) / (Number(s.quantity) || 1));
+  const overlay = openModal('استرجاع — ' + x.name, `
+    <form id="return-form">
+      <p style="color:var(--text-muted);margin-top:0">العميل: ${escHtml(s.customerName || '-')} — اتباع بتاريخ ${escHtml(String(s.date).substring(0, 10))} — ${escHtml(warrantyLabel(s))}</p>
+      <div class="field"><label>الكمية المسترجعة (المتاح للاسترجاع: ${left})</label>
+        <input type="number" name="quantity" value="1" min="1" max="${left}" required /></div>
+      <div class="field"><label>المبلغ اللي هتدفعه للعميل (ج.م)</label>
+        <input type="number" name="refundAmount" value="${unit}" min="0" required /></div>
+      <div class="field"><label>سبب الاسترجاع (اختياري)</label><textarea name="reason" rows="2" placeholder="مثال: عيب في المنتج / غيّر رأيه"></textarea></div>
+      <label style="display:flex;gap:8px;align-items:center;margin:10px 0">
+        <input type="checkbox" name="restock" checked /> رجّع القطعة للمخزون <small style="color:var(--text-muted)">(شيل العلامة لو القطعة تالفة)</small>
+      </label>
+      <div class="modal-actions">
+        <button type="submit" class="btn btn-primary">تأكيد الاسترجاع</button>
+        <button type="button" class="btn btn-outline" id="cancel-btn">إلغاء</button>
+      </div>
+    </form>`, function (el) {
+    const qtyInput = el.querySelector('[name=quantity]');
+    const refundInput = el.querySelector('[name=refundAmount]');
+    qtyInput.addEventListener('input', function () {
+      const q = Math.max(1, Math.min(left, Math.floor(Number(qtyInput.value) || 1)));
+      refundInput.value = unit * q;
+    });
+    el.querySelector('#cancel-btn').addEventListener('click', function () { overlay.remove(); });
+    el.querySelector('#return-form').addEventListener('submit', async function (e) {
+      e.preventDefault();
+      if (overlay._busy) return;
+      overlay._busy = true;
+      const fd = new FormData(e.target);
+      try {
+        await apiWrite('addReturn', {
+          saleType: x.type, saleId: s.id, quantity: fd.get('quantity'), refundAmount: fd.get('refundAmount'),
+          reason: fd.get('reason'), restock: fd.get('restock') ? true : false, employee: CURRENT_USER.name
+        });
+        invalidateProductCaches();
+        overlay.remove();
+        toast(savedMsg('تم تسجيل المسترجع'), 'success');
+        drawReturnsSales();
+        drawReturnsLog();
+      } catch (err) { overlay._busy = false; toast(err.message, 'error'); }
+    });
+  });
+}
+
 /* ============ طباعة الإيصال ============ */
 
 function printReceipt(data) {
@@ -1858,10 +2123,17 @@ function printReceipt(data) {
     '.row .l { white-space: nowrap; }' +
     '.row .v { text-align: left; font-weight: bold; word-break: break-word; }' +
     '.total { font-size: 16px; font-weight: bold; }' +
+    '.item { margin: 4px 0; } .iname { font-weight: bold; }' +
     '</style></head><body>' +
     '<div class="center"><h2>' + escHtml(SHOP_NAME) + '</h2><div class="muted">' + when + '</div></div><hr />' +
-    row('العميل:', data.customerName) + row('الهاتف:', data.customerPhone) +
-    row('المنتج:', data.productName) + row('الموظف:', data.employee) + '<hr />' +
+    row('العميل:', data.customerName) + row('الهاتف:', data.customerPhone) + row('الموظف:', data.employee) + '<hr />' +
+    (data.items && data.items.length
+      ? data.items.map(function (it) {
+          return '<div class="item"><div class="iname">' + escHtml(it.name) + '</div>' +
+            '<div class="row"><span class="l">' + it.qty + ' × ' + Number(it.unit).toLocaleString() + '</span><span class="v">' + Number(it.total).toLocaleString() + '</span></div>' +
+            (it.warranty ? '<div class="muted">الضمان: ' + escHtml(it.warranty) + '</div>' : '') + '</div>';
+        }).join('') + '<hr />'
+      : row('المنتج:', data.productName) + '<hr />') +
     '<div class="row total"><span class="l">الإجمالي:</span><span class="v">' + Number(data.total || 0).toLocaleString() + ' ج.م</span></div><hr />' +
     '<div class="center">شكرًا لتعاملكم معنا</div>' +
     '</body></html>';

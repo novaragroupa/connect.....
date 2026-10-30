@@ -43,7 +43,8 @@ const SHEETS = {
   ACC_SALES: 'AccessorySales',
   DEVICES: 'Devices',
   DEVICE_SALES: 'DeviceSales',
-  CASH: 'CashTransfers'
+  CASH: 'CashTransfers',
+  RETURNS: 'Returns'
 };
 
 const SCHEMAS = {
@@ -53,14 +54,16 @@ const SCHEMAS = {
   AccessoryCategories: ['id', 'name', 'createdAt'],
   AccessoryModels: ['id', 'categoryId', 'categoryName', 'name', 'createdAt'],
   AccessoryItems: ['id', 'code', 'categoryId', 'categoryName', 'name', 'wholesalePrice',
-    'profitPrice', 'totalPrice', 'quantity', 'dateAdded', 'modelId', 'modelName'],
+    'profitPrice', 'totalPrice', 'quantity', 'dateAdded', 'modelId', 'modelName', 'warranty', 'warrantyPeriod'],
   AccessorySales: ['id', 'code', 'itemId', 'itemName', 'categoryName', 'customerName',
-    'customerPhone', 'quantity', 'wholesalePrice', 'profitPrice', 'unitPrice', 'totalPrice', 'notes', 'employee', 'date'],
+    'customerPhone', 'quantity', 'wholesalePrice', 'profitPrice', 'unitPrice', 'totalPrice', 'notes', 'employee', 'date', 'warranty', 'warrantyPeriod'],
   Devices: ['id', 'code', 'deviceType', 'condition', 'name', 'wholesalePrice', 'profitPrice', 'totalPrice',
-    'warranty', 'quantity', 'dateAdded'],
+    'warranty', 'quantity', 'dateAdded', 'warrantyPeriod'],
   DeviceSales: ['id', 'code', 'deviceId', 'deviceName', 'deviceType', 'condition', 'warranty', 'customerName',
-    'customerPhone', 'quantity', 'wholesalePrice', 'profitPrice', 'unitPrice', 'totalPrice', 'notes', 'employee', 'date'],
-  CashTransfers: ['id', 'type', 'customerName', 'customerPhone', 'amount', 'notes', 'employee', 'date']
+    'customerPhone', 'quantity', 'wholesalePrice', 'profitPrice', 'unitPrice', 'totalPrice', 'notes', 'employee', 'date', 'warrantyPeriod'],
+  CashTransfers: ['id', 'type', 'customerName', 'customerPhone', 'amount', 'notes', 'employee', 'date'],
+  Returns: ['id', 'date', 'saleType', 'saleId', 'itemId', 'itemName', 'code', 'customerName', 'customerPhone',
+    'quantity', 'wholesalePrice', 'profitPrice', 'refundAmount', 'restock', 'reason', 'employee']
 };
 
 function setupSheets() {
@@ -184,7 +187,7 @@ function doGet(e) {
 const BATCH_ALLOWED = {
   addMaintenance: 1, addAccessoryCategory: 1, addAccessoryModel: 1, addAccessoryItem: 1, sellAccessoryItem: 1,
   addDevice: 1, sellDevice: 1, addCashTransfer: 1, moveAccessoryCategory: 1,
-  updateAccessoryItem: 1, updateDevice: 1
+  updateAccessoryItem: 1, updateDevice: 1, addReturn: 1
 };
 
 function doPost(e) {
@@ -247,6 +250,8 @@ function dispatch_(action, body) {
     case 'moveAccessoryCategory': return moveAccessoryCategory_(body);
     case 'updateAccessoryItem': return updateAccessoryItem_(body);
     case 'updateDevice': return updateDevice_(body);
+    case 'addReturn': return addReturn_(body);
+    case 'listReturns': return { items: sheetToObjects_(getSheet_(SHEETS.RETURNS)) };
 
     default: return { error: 'إجراء غير معروف: ' + action };
   }
@@ -437,7 +442,9 @@ function addAccessoryItem_(body) {
     profitPrice: profit,
     totalPrice: wholesale + profit,
     quantity: Number(body.quantity) || 0,
-    dateAdded: clientDate_(body)
+    dateAdded: clientDate_(body),
+    warranty: body.warranty || 'بدون ضمان',
+    warrantyPeriod: body.warranty === 'له ضمان' ? (body.warrantyPeriod || '') : ''
   };
   appendObject_(sh, SCHEMAS.AccessoryItems, obj);
   return { item: obj };
@@ -465,6 +472,10 @@ function updateAccessoryItem_(body) {
   updateCellByHeader_(sh, rowNum, SCHEMAS.AccessoryItems, 'profitPrice', profit);
   updateCellByHeader_(sh, rowNum, SCHEMAS.AccessoryItems, 'totalPrice', wholesale + profit);
   updateCellByHeader_(sh, rowNum, SCHEMAS.AccessoryItems, 'quantity', quantity);
+  const accWarranty = body.warranty || item.warranty || 'بدون ضمان';
+  const accPeriod = accWarranty === 'له ضمان' ? (body.warranty ? (body.warrantyPeriod || '') : (item.warrantyPeriod || '')) : '';
+  updateCellByHeader_(sh, rowNum, SCHEMAS.AccessoryItems, 'warranty', accWarranty);
+  updateCellByHeader_(sh, rowNum, SCHEMAS.AccessoryItems, 'warrantyPeriod', accPeriod);
 
   // الموديل: لو الواجهة بعتته نحدّثه، غير كده نسيبه زي ما هو
   const hasModel = body.modelId !== undefined;
@@ -475,7 +486,7 @@ function updateAccessoryItem_(body) {
     updateCellByHeader_(sh, rowNum, SCHEMAS.AccessoryItems, 'modelName', modelName);
   }
 
-  return { item: Object.assign({}, item, { name: name, wholesalePrice: wholesale, profitPrice: profit, totalPrice: wholesale + profit, quantity: quantity, code: newCode || item.code, modelId: modelId, modelName: modelName }) };
+  return { item: Object.assign({}, item, { name: name, wholesalePrice: wholesale, profitPrice: profit, totalPrice: wholesale + profit, quantity: quantity, code: newCode || item.code, modelId: modelId, modelName: modelName, warranty: accWarranty, warrantyPeriod: accPeriod }) };
 }
 
 function sellAccessoryItem_(body) {
@@ -514,7 +525,9 @@ function sellAccessoryItem_(body) {
     totalPrice: Number(item.totalPrice) * sellQty,
     notes: body.notes || '',
     employee: body.employee || '',
-    date: clientDate_(body)
+    date: clientDate_(body),
+    warranty: item.warranty || 'بدون ضمان',
+    warrantyPeriod: item.warrantyPeriod || ''
   };
   appendObject_(salesSh, SCHEMAS.AccessorySales, sale);
   invalidateAccountingCache_();
@@ -545,6 +558,7 @@ function addDevice_(body) {
     profitPrice: profit,
     totalPrice: wholesale + profit,
     warranty: body.warranty, // له ضمان / بدون ضمان
+    warrantyPeriod: body.warranty === 'له ضمان' ? (body.warrantyPeriod || '') : '',
     quantity: Number(body.quantity) || 0,
     dateAdded: clientDate_(body)
   };
@@ -577,9 +591,11 @@ function updateDevice_(body) {
   updateCellByHeader_(sh, rowNum, SCHEMAS.Devices, 'totalPrice', wholesale + profit);
   updateCellByHeader_(sh, rowNum, SCHEMAS.Devices, 'quantity', quantity);
   updateCellByHeader_(sh, rowNum, SCHEMAS.Devices, 'warranty', warranty);
+  const devPeriod = warranty === 'له ضمان' ? (body.warranty ? (body.warrantyPeriod || '') : (dev.warrantyPeriod || '')) : '';
+  updateCellByHeader_(sh, rowNum, SCHEMAS.Devices, 'warrantyPeriod', devPeriod);
   updateCellByHeader_(sh, rowNum, SCHEMAS.Devices, 'deviceType', deviceType);
 
-  return { item: Object.assign({}, dev, { name: name, wholesalePrice: wholesale, profitPrice: profit, totalPrice: wholesale + profit, quantity: quantity, warranty: warranty, deviceType: deviceType, code: newCode || dev.code }) };
+  return { item: Object.assign({}, dev, { name: name, wholesalePrice: wholesale, profitPrice: profit, totalPrice: wholesale + profit, quantity: quantity, warranty: warranty, warrantyPeriod: devPeriod, deviceType: deviceType, code: newCode || dev.code }) };
 }
 
 function sellDevice_(body) {
@@ -619,7 +635,8 @@ function sellDevice_(body) {
     totalPrice: Number(dev.totalPrice) * sellQty,
     notes: body.notes || '',
     employee: body.employee || '',
-    date: clientDate_(body)
+    date: clientDate_(body),
+    warrantyPeriod: dev.warrantyPeriod || ''
   };
   appendObject_(salesSh, SCHEMAS.DeviceSales, sale);
   invalidateAccountingCache_();
@@ -680,11 +697,69 @@ function sellByCode_(body) {
   });
 }
 
+
+/* ============ المسترجع ============ */
+
+function addReturn_(body) {
+  const sh = getSheet_(SHEETS.RETURNS);
+  if (body.id) { const dup = findObjById_(sh, body.id); if (dup) return { item: dup, duplicate: true }; }
+  const isDev = body.saleType === 'device';
+  const salesSh = getSheet_(isDev ? SHEETS.DEVICE_SALES : SHEETS.ACC_SALES);
+  const sale = findObjById_(salesSh, body.saleId);
+  if (!sale) return { error: 'عملية البيع الأصلية مش موجودة' };
+
+  const soldQty = Number(sale.quantity) || 1;
+  const already = sheetToObjects_(sh).filter(function (r) {
+    return String(r.saleId) === String(body.saleId) && r.saleType === (isDev ? 'device' : 'accessory');
+  }).reduce(function (t, r) { return t + (Number(r.quantity) || 0); }, 0);
+  const qty = Math.max(1, Number(body.quantity) || 1);
+  if (qty > soldQty - already) return { error: 'الكمية المسترجعة (' + qty + ') أكبر من المتاح للاسترجاع (' + (soldQty - already) + ')' };
+
+  const unitW = (Number(sale.wholesalePrice) || 0) / soldQty;
+  const wholesale = unitW * qty;
+  const refund = body.refundAmount !== undefined && body.refundAmount !== '' ? Number(body.refundAmount) : (Number(sale.unitPrice) || 0) * qty;
+  const restock = body.restock === false || body.restock === 'false' || body.restock === 'لا' ? 'لا' : 'نعم';
+
+  let newQuantity;
+  if (restock === 'نعم') {
+    const itemSh = getSheet_(isDev ? SHEETS.DEVICES : SHEETS.ACC_ITEMS);
+    const itemId = isDev ? sale.deviceId : sale.itemId;
+    const rowNum = findRowIndexById_(itemSh, itemId);
+    if (rowNum !== -1) {
+      const cur = findObjById_(itemSh, itemId);
+      newQuantity = (Number(cur.quantity) || 0) + qty;
+      updateCellByHeader_(itemSh, rowNum, isDev ? SCHEMAS.Devices : SCHEMAS.AccessoryItems, 'quantity', newQuantity);
+    }
+  }
+
+  const obj = {
+    id: clientId_(body),
+    date: clientDate_(body),
+    saleType: isDev ? 'device' : 'accessory',
+    saleId: sale.id,
+    itemId: isDev ? sale.deviceId : sale.itemId,
+    itemName: isDev ? sale.deviceName : sale.itemName,
+    code: sale.code || '',
+    customerName: sale.customerName || '',
+    customerPhone: sale.customerPhone || '',
+    quantity: qty,
+    wholesalePrice: wholesale,
+    profitPrice: refund - wholesale,
+    refundAmount: refund,
+    restock: restock,
+    reason: body.reason || '',
+    employee: body.employee || ''
+  };
+  appendObject_(sh, SCHEMAS.Returns, obj);
+  invalidateAccountingCache_();
+  return { item: obj, newQuantity: newQuantity };
+}
+
 /* ============ الحسابات ============ */
 
 function accountingSummary_() {
   const scriptCache = CacheService.getScriptCache();
-  const cacheKey = 'accountingSummary_v1';
+  const cacheKey = 'accountingSummary_v2';
   const cached = scriptCache.get(cacheKey);
   if (cached) return JSON.parse(cached);
 
@@ -708,11 +783,18 @@ function accountingSummary_() {
     records.push(toRecord(s.date, s.wholesalePrice, s.profitPrice, s.totalPrice, 'اجهزة'));
   });
 
+  // المسترجع بيتخصم من قسمه (اكسسوارات / اجهزة): الإجمالي بالسالب، والجملة بترجع لو القطعة رجعت المخزون
+  sheetToObjects_(getSheet_(SHEETS.RETURNS)).forEach(function (r) {
+    const w = r.restock === 'نعم' ? -(Number(r.wholesalePrice) || 0) : 0;
+    const t = -(Number(r.refundAmount) || 0);
+    records.push(toRecord(r.date, w, t - w, t, r.saleType === 'device' ? 'اجهزة' : 'اكسسوارات'));
+  });
+
   const result = { records: records };
   try { scriptCache.put(cacheKey, JSON.stringify(result), 30); } catch (e) { /* البيانات كبيرة جدًا على الكاش، مش مشكلة */ }
   return result;
 }
 
 function invalidateAccountingCache_() {
-  try { CacheService.getScriptCache().remove('accountingSummary_v1'); } catch (e) { /* تجاهل */ }
+  try { CacheService.getScriptCache().remove('accountingSummary_v2'); } catch (e) { /* تجاهل */ }
 }
