@@ -1849,7 +1849,7 @@ function printReceipt(data) {
     '@page { size: ' + width + 'mm auto; margin: 0; }' +
     '* { box-sizing: border-box; }' +
     'html, body { margin: 0; padding: 0; background: #fff; color: #000; }' +
-    'body { width: ' + printable + 'mm; margin: 0 auto; padding: 3mm 0 6mm; font-family: Tahoma, "Segoe UI", Arial, sans-serif; font-size: 12px; line-height: 1.55; }' +
+    'body { width: 100%; max-width: ' + width + 'mm; margin: 0 auto; padding: 3mm 3mm 6mm; font-family: Tahoma, "Segoe UI", Arial, sans-serif; font-size: 12px; line-height: 1.55; }' +
     '.center { text-align: center; }' +
     'h2 { margin: 0 0 2px; font-size: 20px; }' +
     '.muted { font-size: 11px; }' +
