@@ -554,16 +554,13 @@ async function doFlush() {
 
 function openFailedOps() {
   const rows = FAILED.map(function (f, i) {
-    return '<div style="padding:10px 0;border-bottom:1px solid var(--border);font-size:13px">' +
-      '<div><strong>' + escHtml(describeOp(f.op)) + '</strong></div>' +
-      '<div style="color:var(--danger);margin:3px 0">' + escHtml(f.error) + '</div>' +
-      '<div style="color:var(--text-muted)">' + escHtml(f.time) + '</div>' +
-      '<button class="link-btn" data-failed-del="' + i + '" style="margin-top:6px">حذف من القائمة</button></div>';
+    return '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 0;border-bottom:1px solid var(--border);font-size:13px">' +
+      '<div><strong>' + escHtml(describeOp(f.op)) + '</strong> — <span style="color:var(--danger)">' + escHtml(f.error) + '</span></div>' +
+      '<button class="link-btn" data-failed-del="' + i + '" style="flex:none">حذف</button></div>';
   }).join('') || '<div class="empty-state">لا توجد عمليات فاشلة</div>';
 
-  const overlay = openModal('عمليات السيرفر رفضها', 
-    '<p style="color:var(--text-muted);font-size:13px;line-height:1.8">العمليات دي اتسجلت على الجهاز بس السيرفر رفضها وقت الرفع ' +
-    '(مثلًا الكمية في المخزون كانت اتغيرت). راجعها يدويًا وسجّلها تاني لو لازم.</p>' + rows +
+  const overlay = openModal('عمليات فشلت',
+    rows +
     '<div class="modal-actions"><button type="button" class="btn btn-outline" id="close-failed">إغلاق</button></div>',
     function (el) {
       el.querySelector('#close-failed').addEventListener('click', function () { overlay.remove(); });
