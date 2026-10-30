@@ -1882,33 +1882,37 @@ function printReceipt(data) {
 
 let globalScanBuffer = '';
 let globalScanLastTime = 0;
+let globalScanTimer = null;
+
+function flushGlobalScan() {
+  clearTimeout(globalScanTimer);
+  const code = globalScanBuffer.trim();
+  globalScanBuffer = '';
+  if (code.length >= 4) handleGlobalScan(code);
+}
 
 document.addEventListener('keydown', function (e) {
-  // لو المستخدم بيكتب فعليًا في أي خانة نص/تيكست إريا/قايمة (زي فورم إضافة أو تسجيل دخول)
-  // سيبها تتصرف عادي، ومتتدخلش خالص
+  // لو المستخدم بيكتب فعليًا في أي خانة، سيبها تتصرف عادي
   const tag = (document.activeElement && document.activeElement.tagName) || '';
-  const isTyping = tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT';
-  if (isTyping) return;
+  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
   if (e.ctrlKey || e.altKey || e.metaKey) return;
-  if (!CURRENT_USER) return; // قبل تسجيل الدخول متعملش حاجة
+  if (!CURRENT_USER) return;
 
   const now = Date.now();
-  // ماسحات الباركود بتكتب الأرقام بسرعة جدًا (أسرع من أي كتابة بشرية)
-  // لو الفاصل بين الضغطات كبير، يبقى ده كتابة عادية أو ضغطة عرضية، ابدأ بافر جديد
-  if (now - globalScanLastTime > 60) globalScanBuffer = '';
+  // السكانر بيكتب بسرعة؛ نسمح بفاصل لحد 150ms (بدل 60) عشان السكانرات الأبطأ
+  if (now - globalScanLastTime > 150) globalScanBuffer = '';
   globalScanLastTime = now;
 
   if (e.key === 'Enter') {
-    const code = globalScanBuffer.trim();
-    globalScanBuffer = '';
-    if (code.length >= 3) {
-      e.preventDefault();
-      handleGlobalScan(code);
-    }
+    if (globalScanBuffer.trim().length >= 4) e.preventDefault();
+    flushGlobalScan();
     return;
   }
   if (e.key.length === 1) {
     globalScanBuffer += e.key;
+    // لو السكانر مبيبعتش Enter: ننفذ البحث لوحدنا بعد ما الكتابة تقف 200ms
+    clearTimeout(globalScanTimer);
+    globalScanTimer = setTimeout(flushGlobalScan, 200);
   }
 });
 
