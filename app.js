@@ -1748,7 +1748,7 @@ function openEditAccessoryForm(item, onSaved) {
       try {
         const wr = readWarranty(fd);
         await apiWrite('updateAccessoryItem', {
-          warranty: wr.warranty, warrantyPeriod: wr.warrantyPeriod, id: item.id, name: fd.get('name'), code: fd.get('code'),
+          warranty: wr.warranty, warrantyPeriod: wr.warrantyPeriod, id: item.id, name: fd.get('name'), code: codeIfChanged(fd, item.code),
           modelId: fd.get('modelId') === null ? undefined : fd.get('modelId'),
           modelName: fd.get('modelId') === null ? undefined : accModelName(fd.get('modelId')),
           wholesalePrice: fd.get('wholesalePrice'), profitPrice: fd.get('profitPrice'), quantity: numIfChanged(fd, 'quantity', item.quantity)
@@ -1796,7 +1796,7 @@ function openEditDeviceForm(device, onSaved) {
       try {
         const wr = readWarranty(fd);
         await apiWrite('updateDevice', {
-          id: device.id, name: fd.get('name'), code: fd.get('code'), deviceType: fd.get('deviceType'), warranty: wr.warranty, warrantyPeriod: wr.warrantyPeriod,
+          id: device.id, name: fd.get('name'), code: codeIfChanged(fd, device.code), deviceType: fd.get('deviceType'), warranty: wr.warranty, warrantyPeriod: wr.warrantyPeriod,
           wholesalePrice: fd.get('wholesalePrice'), profitPrice: fd.get('profitPrice'), quantity: numIfChanged(fd, 'quantity', device.quantity)
         });
         invalidateCache('listDevices');
@@ -1969,6 +1969,12 @@ function openAddUserForm() {
       }, { successMsg: 'تمت إضافة الموظف', onDone: function () { loadUsersTable(); } });
     });
   });
+}
+
+// الكود بيتبعت بس لو الموظف غيّره فعلًا، عشان تعديل السعر/الاسم أوفلاين ميتعارضش مع كود اتغير على السيرفر
+function codeIfChanged(fd, original) {
+  const v = String(fd.get('code') == null ? '' : fd.get('code')).trim();
+  return v === String(original == null ? '' : original).trim() ? undefined : v;
 }
 
 // بنبعت الكمية للسيرفر بس لو الموظف غيّرها فعلًا، عشان تعديل السعر أو الاسم ميرجّعش مخزون قديم فوق بيع حصل من جهاز تاني
