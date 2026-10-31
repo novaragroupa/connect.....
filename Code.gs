@@ -714,8 +714,9 @@ function updateAccessoryItem_(body) {
 
   const newCode = strIn_(body.code, 'كود المنتج', { max: 64 });
   if (newCode && newCode !== String(item.code)) {
-    if (codeExists_(newCode, item.id)) return { error: 'الكود ده مستخدم بالفعل لمنتج تاني' };
-    fields.code = newCode;
+    if (!codeExists_(newCode, item.id)) fields.code = newCode;
+    else if (!body.fromBatch) return { error: 'الكود ده مستخدم بالفعل لمنتج تاني' };
+    // لو العملية جاية من الطابور (اتعملت أوفلاين): نطبّق باقي التعديل ونسيب الكود زي ما هو
   }
   const name = body.name !== undefined && body.name !== '' ? strIn_(body.name, 'اسم الصنف', { required: true, max: 200 }) : item.name;
   const wholesale = body.wholesalePrice !== undefined ? numIn_(body.wholesalePrice, 'سعر الجملة', { min: 0 }) : Number(item.wholesalePrice);
@@ -823,8 +824,8 @@ function updateDevice_(body) {
 
   const newCode = strIn_(body.code, 'كود المنتج', { max: 64 });
   if (newCode && newCode !== String(dev.code)) {
-    if (codeExists_(newCode, dev.id)) return { error: 'الكود ده مستخدم بالفعل لمنتج تاني' };
-    fields.code = newCode;
+    if (!codeExists_(newCode, dev.id)) fields.code = newCode;
+    else if (!body.fromBatch) return { error: 'الكود ده مستخدم بالفعل لمنتج تاني' };
   }
   const name = body.name !== undefined && body.name !== '' ? strIn_(body.name, 'اسم الجهاز', { required: true, max: 200 }) : dev.name;
   const wholesale = body.wholesalePrice !== undefined ? numIn_(body.wholesalePrice, 'سعر الجملة', { min: 0 }) : Number(dev.wholesalePrice);
