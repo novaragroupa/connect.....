@@ -1,6 +1,8 @@
 /* ============ حالة عامة ============ */
 let CURRENT_USER = null;
 try { CURRENT_USER = JSON.parse(localStorage.getItem('connect_user') || 'null'); } catch (e) { CURRENT_USER = null; }
+// جلسة قديمة من غير توقيع من السيرفر: لازم تسجيل دخول جديد (العمليات المحفوظة على الجهاز مش بتتأثر)
+if (CURRENT_USER && !CURRENT_USER.token) { CURRENT_USER = null; try { localStorage.removeItem('connect_user'); } catch (e) { /* تجاهل */ } }
 let CURRENT_SECTION = 'dashboard';
 let CACHE = {}; // كاش بسيط للبيانات المجلوبة من الشيت
 
@@ -19,7 +21,7 @@ async function api(action, payload, timeoutMs) {
     const res = await fetch(APPS_SCRIPT_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-      body: JSON.stringify(Object.assign({ action: action }, payload || {})),
+      body: JSON.stringify(Object.assign({ action: action, uid: CURRENT_USER ? CURRENT_USER.id : undefined, token: CURRENT_USER ? CURRENT_USER.token : undefined }, payload || {})),
       signal: ctl.signal
     });
     data = await res.json();
@@ -32,8 +34,29 @@ async function api(action, payload, timeoutMs) {
   }
   clearTimeout(timer);
   markNetUp();
+  if (data && data.authError) {
+    handleAuthExpired(data.error);
+    const ae = new Error(data.error || 'انتهت الجلسة، سجّل الدخول من جديد');
+    ae.isAuth = true;
+    throw ae;
+  }
+  if (data && data.busy) { // السيرفر مشغول بعملية تانية: نعامله زي انقطاع مؤقت (العملية بتتحفظ وتتعاد)
+    const be = new Error(data.error || 'السيرفر مشغول');
+    be.isNetwork = true; be.busy = true;
+    throw be;
+  }
   if (!data.ok || data.error) throw new Error(data.error || 'حصل خطأ غير معروف');
   return data;
+}
+
+// الجلسة انتهت أو اتغيرت صلاحيتها: نرجّع لشاشة الدخول من غير ما نمسح العمليات المحفوظة على الجهاز
+function handleAuthExpired(msg) {
+  if (!CURRENT_USER) return;
+  try { localStorage.removeItem('connect_user'); } catch (e) { /* تجاهل */ }
+  CURRENT_USER = null;
+  PREFETCHED = false;
+  closeModals();
+  renderLogin(msg || 'انتهت الجلسة، سجّل الدخول من جديد');
 }
 
 // نظام كاش بسيط: أول مرة بيجيب البيانات من الشيت، وبعد كده بيرجعها فورًا من الذاكرة
@@ -126,7 +149,7 @@ function renderLogin(errorMsg) {
         <img src="logo-icon.webp" class="logo-mark" alt="Connect" />
         <h1>${SHOP_NAME}</h1>
         <p class="subtitle">نظام إدارة المحل — سجّل دخولك للمتابعة</p>
-        ${errorMsg ? `<div class="error-msg">${errorMsg}</div>` : ''}
+        ${errorMsg ? `<div class="error-msg">${escHtml(errorMsg)}</div>` : ''}
         <form id="login-form">
           <div class="field">
             <label>اسم المستخدم</label>
@@ -148,7 +171,7 @@ function renderLogin(errorMsg) {
     btn.disabled = true; btn.textContent = 'جاري الدخول...';
     try {
       const data = await api('login', { username: fd.get('username'), password: fd.get('password') });
-      CURRENT_USER = data.user;
+      CURRENT_USER = Object.assign({}, data.user, { token: data.token });
       localStorage.setItem('connect_user', JSON.stringify(CURRENT_USER));
       prefetchAll();
       renderApp();
@@ -188,7 +211,7 @@ function renderApp() {
   const navHtml = NAV_ITEMS
     .filter(function (item) { return !item.adminOnly || CURRENT_USER.role === 'مدير النظام'; })
     .map(function (item) {
-      return `<li><button class="nav-btn ${item.id === CURRENT_SECTION ? 'active' : ''}" data-nav="${item.id}">
+      return `<li><button class="nav-btn ${item.id === CURRENT_SECTION ? 'active' : ''}" data-nav="${escHtml(item.id)}">
         <span>${item.icon}</span><span class="label">${item.label}</span>
       </button></li>`;
     }).join('');
@@ -202,8 +225,8 @@ function renderApp() {
         </div>
         <ul class="nav-list">${navHtml}</ul>
         <div class="user-box">
-          <div class="name">${CURRENT_USER.name}</div>
-          <div class="role">${CURRENT_USER.role}</div>
+          <div class="name">${escHtml(CURRENT_USER.name)}</div>
+          <div class="role">${escHtml(CURRENT_USER.role)}</div>
           <button class="btn btn-outline btn-sm btn-block" id="logout-btn">تسجيل الخروج</button>
         </div>
       </aside>
@@ -259,7 +282,7 @@ function setBreadcrumb(text) {
 function openModal(title, bodyHtml, onMount) {
   const overlay = document.createElement('div');
   overlay.className = 'modal-overlay';
-  overlay.innerHTML = `<div class="modal"><h3>${title}</h3><div id="modal-body">${bodyHtml}</div></div>`;
+  overlay.innerHTML = `<div class="modal"><h3>${escHtml(title)}</h3><div id="modal-body">${bodyHtml}</div></div>`;
   overlay.addEventListener('click', function (e) { if (e.target === overlay) overlay.remove(); });
   document.body.appendChild(overlay);
   if (onMount) onMount(overlay);
@@ -280,7 +303,7 @@ async function renderDashboard() {
       cachedApi('listMaintenance'), cachedApi('listAccessorySales'), cachedApi('listDeviceSales'),
       cachedApi('listAccessoryItems'), cachedApi('listDevices')
     ]);
-    const today = new Date().toISOString().substring(0, 10);
+    const today = localNowStr().substring(0, 10); // تاريخ الجهاز المحلي (toISOString كان بيدّي تاريخ UTC: يوم غلط بعد منتصف الليل)
     const todaySales = [].concat(maint.items, accSales.items, devSales.items)
       .filter(function (r) { return String(r.date).substring(0, 10) === today; });
     const todayTotal = todaySales.reduce(function (s, r) { return s + Number(r.total || r.totalPrice || 0); }, 0);
@@ -288,14 +311,18 @@ async function renderDashboard() {
     let retToday = [];
     try { retToday = ((await cachedApi('listReturns')).items || []).filter(function (r) { return String(r.date).substring(0, 10) === today; }); } catch (e) { /* ignore */ }
     const retTotal = retToday.reduce(function (t, r) { return t + Number(r.refundAmount || 0); }, 0);
-    const retProfit = retToday.reduce(function (t, r) { return t + Number(r.profitPrice || 0); }, 0);
+    // الربح اللي ضاع بسبب المسترجع: لو القطعة رجعت المخزون بنخسر (المرتجع - الجملة)، ولو لأ بنخسر المبلغ كله (نفس منطق الحسابات)
+    const retProfit = retToday.reduce(function (t, r) {
+      const refund = Number(r.refundAmount || 0);
+      return t + (r.restock === 'نعم' ? refund - Number(r.wholesalePrice || 0) : refund);
+    }, 0);
     const lowStock = accItems.items.filter(function (i) { return Number(i.quantity) <= 2; }).length
       + devices.items.filter(function (i) { return Number(i.quantity) <= 2; }).length;
 
     content().innerHTML = `
       <div class="grid grid-4">
         <div class="card stat-card"><div class="stat-label">مبيعات اليوم</div><div class="stat-value brown">${(todayTotal - retTotal).toLocaleString()} ج.م</div></div>
-        <div class="card stat-card"><div class="stat-label">أرباح اليوم</div><div class="stat-value dark">${(todayProfit + retProfit).toLocaleString()} ج.م</div></div>
+        <div class="card stat-card"><div class="stat-label">أرباح اليوم</div><div class="stat-value dark">${(todayProfit - retProfit).toLocaleString()} ج.م</div></div>
         <div class="card stat-card"><div class="stat-label">عمليات اليوم</div><div class="stat-value dark">${todaySales.length}</div></div>
         <div class="card stat-card"><div class="stat-label">أصناف على وشك النفاذ</div><div class="stat-value brown">${lowStock}</div></div>
       </div>
@@ -305,10 +332,10 @@ async function renderDashboard() {
           <table>
             <thead><tr><th>الوقت</th><th>النوع</th><th>العميل</th><th>الإجمالي</th><th>الموظف</th></tr></thead>
             <tbody>
-              ${todaySales.slice(-10).reverse().map(function (r) {
+              ${todaySales.slice().sort(function (a, b) { return String(a.date).localeCompare(String(b.date)); }).slice(-10).reverse().map(function (r) {
                 const type = r.deviceCategory ? 'صيانة' : (r.categoryName ? 'اكسسوار' : 'جهاز');
-                return `<tr><td>${String(r.date).substring(11)}</td><td>${type}</td><td>${r.customerName || '-'}</td>
-                <td>${Number(r.total || r.totalPrice || 0).toLocaleString()} ج.م</td><td>${r.employee || '-'}</td></tr>`;
+                return `<tr><td>${String(r.date).substring(11)}</td><td>${type}</td><td>${escHtml(r.customerName || '-')}</td>
+                <td>${Number(r.total || r.totalPrice || 0).toLocaleString()} ج.م</td><td>${escHtml(r.employee || '-')}</td></tr>`;
               }).join('') || `<tr><td colspan="5" class="empty-state">لا توجد عمليات اليوم بعد</td></tr>`}
             </tbody>
           </table>
@@ -316,7 +343,7 @@ async function renderDashboard() {
       </div>
     `;
   } catch (err) {
-    content().innerHTML = `<div class="empty-state">تعذر تحميل البيانات: ${err.message}</div>`;
+    content().innerHTML = `<div class="empty-state">تعذر تحميل البيانات: ${escHtml(err.message)}</div>`;
   }
 }
 
@@ -573,10 +600,10 @@ async function openScanAddAccessoryForm(code, onSaved) {
         <select name="categoryId" required>
           <option value="">اختر النوع...</option>
           <optgroup label="📱 إكسسوارات الموبايل">
-            ${categories.filter(function (c) { return !catIsPc(c); }).map(function (c) { return `<option value="${c.id}" data-name="${c.name}">${c.name}</option>`; }).join('')}
+            ${categories.filter(function (c) { return !catIsPc(c); }).map(function (c) { return `<option value="${escHtml(c.id)}" data-name="${escHtml(c.name)}">${escHtml(c.name)}</option>`; }).join('')}
           </optgroup>
           <optgroup label="💻 إكسسوارات الكمبيوتر">
-            ${categories.filter(catIsPc).map(function (c) { return `<option value="${c.id}" data-name="${c.name}">${dispCat(c.name)}</option>`; }).join('')}
+            ${categories.filter(catIsPc).map(function (c) { return `<option value="${escHtml(c.id)}" data-name="${escHtml(c.name)}">${escHtml(dispCat(c.name))}</option>`; }).join('')}
           </optgroup>
           <option value="__new__">+ نوع جديد (موبايل)</option>
           <option value="__new_pc__">+ نوع جديد (كمبيوتر)</option>
@@ -622,10 +649,16 @@ async function openScanAddAccessoryForm(code, onSaved) {
         let categoryId = fd.get('categoryId');
         let categoryName;
         if (categoryId === '__new__' || categoryId === '__new_pc__') {
-          const newName = (categoryId === '__new_pc__' ? PC_MARK : '') + String(fd.get('newCategoryName')).trim();
-          const newCat = await apiWrite('addAccessoryCategory', { name: newName });
-          categoryId = newCat.item.id; categoryName = newCat.item.name;
-          patchCacheAdd('listAccessoryCategories', newCat.item);
+          const rawName = String(fd.get('newCategoryName') || '').trim();
+          if (!rawName) throw new Error('اكتب اسم النوع الجديد');
+          const newName = (categoryId === '__new_pc__' ? PC_MARK : '') + rawName;
+          const sameCat = ((LISTS.listAccessoryCategories || {}).items || []).filter(function (c) { return c.name === newName; })[0];
+          if (sameCat) { categoryId = sameCat.id; categoryName = sameCat.name; }
+          else {
+            const newCat = await apiWrite('addAccessoryCategory', { name: newName });
+            categoryId = newCat.item.id; categoryName = newCat.item.name;
+            patchCacheAdd('listAccessoryCategories', newCat.item);
+          }
         } else {
           categoryName = catSelect.options[catSelect.selectedIndex].getAttribute('data-name');
         }
@@ -648,7 +681,7 @@ function openScanAddDeviceForm(code, onSaved) {
       <div class="field">
         <label>نوع الجهاز</label>
         <select name="deviceType" required>
-          ${DEVICE_TYPE_PRESETS.map(function (t) { return `<option value="${t}">${t}</option>`; }).join('')}
+          ${DEVICE_TYPE_PRESETS.map(function (t) { return `<option value="${escHtml(t)}">${escHtml(t)}</option>`; }).join('')}
           <option value="__new__">+ نوع جديد</option>
         </select>
       </div>
@@ -749,7 +782,7 @@ async function loadMaintenanceTable() {
         return (r.customerName || '').toLowerCase().includes(q) || (r.deviceType || '').toLowerCase().includes(q);
       });
     }
-    rows.sort(function (a, b) { return new Date(b.date) - new Date(a.date); });
+    rows.sort(function (a, b) { return String(b.date).localeCompare(String(a.date)); });
 
     document.getElementById('maint-table').innerHTML = rows.length ? `
       <table>
@@ -760,21 +793,21 @@ async function loadMaintenanceTable() {
         <tbody>
           ${rows.map(function (r) {
             return `<tr>
-              <td>${r.date}</td>
-              <td><span class="badge ${r.caseType === 'كشف اعطال' ? 'badge-slate' : 'badge-brown'}">${r.caseType}</span></td>
-              <td>${r.deviceType || '-'}</td><td>${r.faultType || '-'}</td>
-              <td>${r.customerName || '-'}</td><td>${r.customerPhone || '-'}</td>
+              <td>${escHtml(r.date)}</td>
+              <td><span class="badge ${r.caseType === 'كشف اعطال' ? 'badge-slate' : 'badge-brown'}">${escHtml(r.caseType)}</span></td>
+              <td>${escHtml(r.deviceType || '-')}</td><td>${escHtml(r.faultType || '-')}</td>
+              <td>${escHtml(r.customerName || '-')}</td><td>${escHtml(r.customerPhone || '-')}</td>
               <td>${Number(r.wholesaleCost).toLocaleString()}</td>
               <td>${Number(r.profitCost).toLocaleString()}</td>
               <td><strong>${Number(r.total).toLocaleString()}</strong></td>
-              <td>${r.notes || '-'}</td>
-              <td>${r.employee || '-'}</td>
+              <td>${escHtml(r.notes || '-')}</td>
+              <td>${escHtml(r.employee || '-')}</td>
             </tr>`;
           }).join('')}
         </tbody>
       </table>` : `<div class="empty-state">لا توجد عمليات مطابقة</div>`;
   } catch (err) {
-    document.getElementById('maint-table').innerHTML = `<div class="empty-state">${err.message}</div>`;
+    document.getElementById('maint-table').innerHTML = `<div class="empty-state">${escHtml(err.message)}</div>`;
   }
 }
 
@@ -911,10 +944,10 @@ async function renderAccessories() {
       </div>
       <div class="grid grid-4" id="cat-grid">
         ${cats.map(function (c) {
-          const count = itemData.items.filter(function (i) { return i.categoryId === c.id; }).length;
-          return `<div class="category-box" data-cat-id="${c.id}" data-cat-name="${c.name}">
-            <div class="icon">${categoryIcon_(dispCat(c.name), isPc)}</div><div class="name">${dispCat(c.name)}</div><div class="count">${count} صنف</div>
-            <button class="link-btn" data-move-cat="${c.id}" style="margin-top:10px;font-size:12px">↔ نقل لـ ${isPc ? 'إكسسوارات الموبايل' : 'إكسسوارات الكمبيوتر'}</button>
+          const count = itemData.items.filter(function (i) { return String(i.categoryId) === String(c.id); }).length;
+          return `<div class="category-box" data-cat-id="${escHtml(c.id)}" data-cat-name="${escHtml(c.name)}">
+            <div class="icon">${categoryIcon_(dispCat(c.name), isPc)}</div><div class="name">${escHtml(dispCat(c.name))}</div><div class="count">${count} صنف</div>
+            <button class="link-btn" data-move-cat="${escHtml(c.id)}" style="margin-top:10px;font-size:12px">↔ نقل لـ ${isPc ? 'إكسسوارات الموبايل' : 'إكسسوارات الكمبيوتر'}</button>
           </div>`;
         }).join('') || '<div class="empty-state">لا توجد أنواع بعد، أضف أول نوع</div>'}
       </div>
@@ -936,7 +969,7 @@ async function renderAccessories() {
       });
     });
   } catch (err) {
-    content().innerHTML = `<div class="empty-state">${err.message}</div>`;
+    content().innerHTML = `<div class="empty-state">${escHtml(err.message)}</div>`;
   }
 }
 
@@ -948,7 +981,7 @@ function moveAccessoryCategory(catId, catName, onDone) {
   const newName = (toPc ? PC_MARK : '') + pure;
   const label = toPc ? 'إكسسوارات الكمبيوتر' : 'إكسسوارات الموبايل';
   const overlay = openModal('نقل النوع', `
-    <p style="line-height:1.8">هتنقل نوع <strong>${pure}</strong> بكل أصنافه وبياناته (الأسعار، الكميات، الأكواد، المبيعات) إلى <strong>${label}</strong>.</p>
+    <p style="line-height:1.8">هتنقل نوع <strong>${escHtml(pure)}</strong> بكل أصنافه وبياناته (الأسعار، الكميات، الأكواد، المبيعات) إلى <strong>${escHtml(label)}</strong>.</p>
     <div class="modal-actions">
       <button type="button" class="btn btn-primary" id="confirm-move">نقل</button>
       <button type="button" class="btn btn-outline" id="cancel-btn">إلغاء</button>
@@ -1117,7 +1150,7 @@ async function loadItemsTable(catId) {
   const search = (document.getElementById('item-search') || {}).value || '';
   try {
     const data = await cachedApi('listAccessoryItems');
-    let rows = data.items.filter(function (i) { return i.categoryId === catId; });
+    let rows = data.items.filter(function (i) { return String(i.categoryId) === String(catId); });
     if (currentModelFilter !== null) rows = rows.filter(function (i) { return String(i.modelId || '') === currentModelFilter; });
     if (search) rows = rows.filter(function (i) { return i.name.toLowerCase().includes(search.toLowerCase()); });
     document.getElementById('items-table').innerHTML = rows.length ? `
@@ -1126,13 +1159,13 @@ async function loadItemsTable(catId) {
         <tbody>
           ${rows.map(function (i) {
             return `<tr>
-              <td><span class="badge badge-slate">${i.code || '-'}</span></td>
-              <td>${i.name}</td><td><span class="badge ${i.warranty === 'له ضمان' ? 'badge-success' : 'badge-slate'}">${escHtml(warrantyLabel(i))}</span></td><td>${Number(i.wholesalePrice).toLocaleString()}</td>
+              <td><span class="badge badge-slate">${escHtml(i.code || '-')}</span></td>
+              <td>${escHtml(i.name)}</td><td><span class="badge ${i.warranty === 'له ضمان' ? 'badge-success' : 'badge-slate'}">${escHtml(warrantyLabel(i))}</span></td><td>${Number(i.wholesalePrice).toLocaleString()}</td>
               <td>${Number(i.profitPrice).toLocaleString()}</td><td><strong>${Number(i.totalPrice).toLocaleString()}</strong></td>
               <td>${i.quantity <= 2 ? '<span class="badge badge-danger">' + i.quantity + '</span>' : i.quantity}</td>
-              <td>${i.dateAdded}</td>
-              <td><button class="btn btn-primary btn-sm" data-sell-id="${i.id}">بيع للعميل</button></td>
-              <td><button class="link-btn" data-edit-id="${i.id}">تعديل</button></td>
+              <td>${escHtml(i.dateAdded)}</td>
+              <td><button class="btn btn-primary btn-sm" data-sell-id="${escHtml(i.id)}">بيع للعميل</button></td>
+              <td><button class="link-btn" data-edit-id="${escHtml(i.id)}">تعديل</button></td>
             </tr>`;
           }).join('')}
         </tbody>
@@ -1151,7 +1184,7 @@ async function loadItemsTable(catId) {
       });
     });
   } catch (err) {
-    document.getElementById('items-table').innerHTML = `<div class="empty-state">${err.message}</div>`;
+    document.getElementById('items-table').innerHTML = `<div class="empty-state">${escHtml(err.message)}</div>`;
   }
 }
 
@@ -1159,7 +1192,7 @@ function openAddItemForm(catId, catName, prefillCode) {
   const overlay = openModal('إضافة صنف جديد — ' + dispCat(catName) + (currentModelName ? ' / ' + escHtml(currentModelName) : ''), `
     <form id="item-form">
       <div class="field"><label>اسم الصنف</label><input name="name" required /></div>
-      <div class="field"><label>كود المنتج (اختياري — سيبه فاضي عشان يتولد تلقائي)</label><input name="code" placeholder="اختياري" value="${prefillCode || ''}" /></div>
+      <div class="field"><label>كود المنتج (اختياري — سيبه فاضي عشان يتولد تلقائي)</label><input name="code" placeholder="اختياري" value="${escHtml(prefillCode || '')}" /></div>
       <div class="grid grid-2">
         <div class="field"><label>سعر الجملة</label><input type="number" name="wholesalePrice" value="0" required /></div>
         <div class="field"><label>سعر المكسب</label><input type="number" name="profitPrice" value="0" required /></div>
@@ -1213,6 +1246,8 @@ function openSellAccessoryForm(item, catId) {
     el.querySelector('#cancel-btn').addEventListener('click', function () { overlay.remove(); });
     el.querySelector('#sell-form').addEventListener('submit', async function (e) {
       e.preventDefault();
+      if (overlay._busy) return; // منع الضغط مرتين (كان بيسجل البيع/التعديل مرتين)
+      overlay._busy = true;
       const fd = new FormData(e.target);
       try {
         const result = await apiWrite('sellAccessoryItem', {
@@ -1228,7 +1263,7 @@ function openSellAccessoryForm(item, catId) {
           employee: result.sale.employee, total: result.sale.totalPrice
         });
         loadItemsTable(catId);
-      } catch (err) { toast(err.message, 'error'); }
+      } catch (err) { overlay._busy = false; toast(err.message, 'error'); }
     });
   });
 }
@@ -1260,8 +1295,8 @@ async function renderDevices() {
       <div class="grid grid-4" id="device-type-grid">
         ${allTypes.map(function (t) {
           const count = data.items.filter(function (d) { return (d.deviceType || 'أخرى') === t; }).length;
-          return `<div class="category-box" data-type="${t}">
-            <div class="icon">${deviceTypeIcon_(t)}</div><div class="name">${t}</div><div class="count">${count} جهاز</div>
+          return `<div class="category-box" data-type="${escHtml(t)}">
+            <div class="icon">${deviceTypeIcon_(t)}</div><div class="name">${escHtml(t)}</div><div class="count">${count} جهاز</div>
           </div>`;
         }).join('')}
       </div>
@@ -1274,7 +1309,7 @@ async function renderDevices() {
       box.addEventListener('click', function () { renderDeviceTypeItems(box.getAttribute('data-type')); });
     });
   } catch (err) {
-    content().innerHTML = `<div class="empty-state">${err.message}</div>`;
+    content().innerHTML = `<div class="empty-state">${escHtml(err.message)}</div>`;
   }
 }
 
@@ -1347,18 +1382,18 @@ async function loadDevicesTable() {
         <tbody>
           ${rows.map(function (d) {
             return `<tr>
-              <td><span class="badge badge-slate">${d.code || '-'}</span></td>
-              <td>${d.name}</td>
+              <td><span class="badge badge-slate">${escHtml(d.code || '-')}</span></td>
+              <td>${escHtml(d.name)}</td>
               <td><span class="badge ${d.warranty === 'له ضمان' ? 'badge-success' : 'badge-slate'}">${escHtml(warrantyLabel(d))}</span></td>
               <td>${Number(d.wholesalePrice).toLocaleString()}</td><td>${Number(d.profitPrice).toLocaleString()}</td>
               <td><strong>${Number(d.totalPrice).toLocaleString()}</strong></td>
               <td>${d.quantity <= 2 ? '<span class="badge badge-danger">' + d.quantity + '</span>' : d.quantity}</td>
-              <td><button class="btn btn-primary btn-sm" data-sell-device="${d.id}">بيع للعميل</button></td>
-              <td><button class="link-btn" data-edit-device="${d.id}">تعديل</button></td>
+              <td><button class="btn btn-primary btn-sm" data-sell-device="${escHtml(d.id)}">بيع للعميل</button></td>
+              <td><button class="link-btn" data-edit-device="${escHtml(d.id)}">تعديل</button></td>
             </tr>`;
           }).join('')}
         </tbody>
-      </table>` : `<div class="empty-state">لا توجد أجهزة ${deviceTab} من نوع ${currentDeviceType} بعد</div>`;
+      </table>` : `<div class="empty-state">لا توجد أجهزة ${escHtml(deviceTab)} من نوع ${escHtml(currentDeviceType)} بعد</div>`;
     document.querySelectorAll('[data-edit-device]').forEach(function (btn) {
       btn.addEventListener('click', function () {
         const dev = rows.find(function (r) { return String(r.id) === btn.getAttribute('data-edit-device'); });
@@ -1372,7 +1407,7 @@ async function loadDevicesTable() {
       });
     });
   } catch (err) {
-    document.getElementById('devices-table').innerHTML = `<div class="empty-state">${err.message}</div>`;
+    document.getElementById('devices-table').innerHTML = `<div class="empty-state">${escHtml(err.message)}</div>`;
   }
 }
 
@@ -1380,12 +1415,12 @@ function openAddDeviceForm(presetType, prefillCode) {
   const overlay = openModal('إضافة جهاز — ' + deviceTab, `
     <form id="device-form">
       <div class="field"><label>اسم الجهاز</label><input name="name" required /></div>
-      <div class="field"><label>كود المنتج (اختياري — سيبه فاضي عشان يتولد تلقائي)</label><input name="code" placeholder="اختياري" value="${prefillCode || ''}" /></div>
+      <div class="field"><label>كود المنتج (اختياري — سيبه فاضي عشان يتولد تلقائي)</label><input name="code" placeholder="اختياري" value="${escHtml(prefillCode || '')}" /></div>
       <div class="field">
         <label>نوع الجهاز</label>
         <select name="deviceType" required>
           ${DEVICE_TYPE_PRESETS.concat(presetType && DEVICE_TYPE_PRESETS.indexOf(presetType) === -1 ? [presetType] : [])
-            .map(function (t) { return `<option value="${t}" ${t === presetType ? 'selected' : ''}>${t}</option>`; }).join('')}
+            .map(function (t) { return `<option value="${escHtml(t)}" ${t === presetType ? 'selected' : ''}>${escHtml(t)}</option>`; }).join('')}
           <option value="__new__">+ نوع جديد</option>
         </select>
       </div>
@@ -1452,6 +1487,8 @@ function openSellDeviceForm(device) {
     el.querySelector('#cancel-btn').addEventListener('click', function () { overlay.remove(); });
     el.querySelector('#sell-device-form').addEventListener('submit', async function (e) {
       e.preventDefault();
+      if (overlay._busy) return; // منع الضغط مرتين (كان بيسجل البيع/التعديل مرتين)
+      overlay._busy = true;
       const fd = new FormData(e.target);
       try {
         const result = await apiWrite('sellDevice', {
@@ -1467,7 +1504,7 @@ function openSellDeviceForm(device) {
           employee: result.sale.employee, total: result.sale.totalPrice
         });
         loadDevicesTable();
-      } catch (err) { toast(err.message, 'error'); }
+      } catch (err) { overlay._busy = false; toast(err.message, 'error'); }
     });
   });
 }
@@ -1494,24 +1531,24 @@ async function loadCashTable() {
     const data = await cachedApi('listCashTransfers');
     let rows = data.items;
     if (search) rows = rows.filter(function (r) { return (r.customerName || '').toLowerCase().includes(search.toLowerCase()); });
-    rows.sort(function (a, b) { return new Date(b.date) - new Date(a.date); });
+    rows.sort(function (a, b) { return String(b.date).localeCompare(String(a.date)); });
     document.getElementById('cash-table').innerHTML = rows.length ? `
       <table>
         <thead><tr><th>التاريخ</th><th>النوع</th><th>العميل</th><th>الهاتف</th><th>المبلغ</th><th>ملاحظات</th><th>الموظف</th></tr></thead>
         <tbody>
           ${rows.map(function (r) {
             return `<tr>
-              <td>${r.date}</td>
-              <td><span class="badge ${r.type === 'ايداع' ? 'badge-success' : 'badge-brown'}">${r.type}</span></td>
-              <td>${r.customerName}</td><td>${r.customerPhone}</td>
+              <td>${escHtml(r.date)}</td>
+              <td><span class="badge ${r.type === 'ايداع' ? 'badge-success' : 'badge-brown'}">${escHtml(r.type)}</span></td>
+              <td>${escHtml(r.customerName)}</td><td>${escHtml(r.customerPhone)}</td>
               <td><strong>${Number(r.amount).toLocaleString()}</strong></td>
-              <td>${r.notes || '-'}</td><td>${r.employee}</td>
+              <td>${escHtml(r.notes || '-')}</td><td>${escHtml(r.employee)}</td>
             </tr>`;
           }).join('')}
         </tbody>
       </table>` : `<div class="empty-state">لا توجد عمليات بعد</div>`;
   } catch (err) {
-    document.getElementById('cash-table').innerHTML = `<div class="empty-state">${err.message}</div>`;
+    document.getElementById('cash-table').innerHTML = `<div class="empty-state">${escHtml(err.message)}</div>`;
   }
 }
 
@@ -1621,18 +1658,18 @@ async function loadInventoryBody(mode) {
       wrap.innerHTML = `
         <div class="grid grid-3">
           ${cats.items.map(function (c) {
-            const list = items.items.filter(function (i) { return i.categoryId === c.id; });
+            const list = items.items.filter(function (i) { return String(i.categoryId) === String(c.id); });
             const totalQty = list.reduce(function (s, i) { return s + Number(i.quantity); }, 0);
             return `<div class="card">
-              <h3 style="margin-top:0">${catIsPc(c) ? '💻 ' : ''}${dispCat(c.name)} <span class="badge badge-brown">${totalQty} قطعة</span></h3>
+              <h3 style="margin-top:0">${catIsPc(c) ? '💻 ' : ''}${escHtml(dispCat(c.name))} <span class="badge badge-brown">${totalQty} قطعة</span></h3>
               ${list.length ? list.map(function (i) {
                 return `<div style="padding:8px 0;border-bottom:1px solid var(--border);font-size:13px">
                   <div style="display:flex;justify-content:space-between;align-items:center">
-                    <strong>${i.name}</strong>
+                    <strong>${escHtml(i.name)}</strong>
                     <span>${i.quantity <= 2 ? '<span class="badge badge-danger">' + i.quantity + '</span>' : i.quantity}
-                    <button class="link-btn" style="margin-right:8px" data-edit-acc-id="${i.id}">تعديل</button></span>
+                    <button class="link-btn" style="margin-right:8px" data-edit-acc-id="${escHtml(i.id)}">تعديل</button></span>
                   </div>
-                  <div style="color:#888">كود: ${i.code || '-'}${i.modelName ? ' — موديل: ' + escHtml(i.modelName) : ''} — إجمالي السعر: ${Number(i.totalPrice).toLocaleString()} ج.م — أُضيف: ${i.dateAdded}</div>
+                  <div style="color:#888">كود: ${escHtml(i.code || '-')}${i.modelName ? ' — موديل: ' + escHtml(i.modelName) : ''} — إجمالي السعر: ${Number(i.totalPrice).toLocaleString()} ج.م — أُضيف: ${escHtml(i.dateAdded)}</div>
                 </div>`;
               }).join('') : '<div class="empty-state" style="padding:12px">لا توجد أصناف</div>'}
             </div>`;
@@ -1653,11 +1690,11 @@ async function loadInventoryBody(mode) {
             <thead><tr><th>الكود</th><th>النوع</th><th>الاسم</th><th>الحالة</th><th>الضمان</th><th>الإجمالي</th><th>الكمية</th><th>تاريخ الإضافة</th><th></th></tr></thead>
             <tbody>
               ${data.items.map(function (d) {
-                return `<tr><td><span class="badge badge-slate">${d.code || '-'}</span></td><td>${d.deviceType || '-'}</td><td>${d.name}</td><td>${d.condition}</td><td>${escHtml(warrantyLabel(d))}</td>
+                return `<tr><td><span class="badge badge-slate">${escHtml(d.code || '-')}</span></td><td>${escHtml(d.deviceType || '-')}</td><td>${escHtml(d.name)}</td><td>${escHtml(d.condition)}</td><td>${escHtml(warrantyLabel(d))}</td>
                 <td>${Number(d.totalPrice).toLocaleString()}</td>
                 <td>${d.quantity <= 2 ? '<span class="badge badge-danger">' + d.quantity + '</span>' : d.quantity}</td>
-                <td>${d.dateAdded}</td>
-                <td><button class="link-btn" data-edit-dev-id="${d.id}">تعديل</button></td></tr>`;
+                <td>${escHtml(d.dateAdded)}</td>
+                <td><button class="link-btn" data-edit-dev-id="${escHtml(d.id)}">تعديل</button></td></tr>`;
               }).join('') || '<tr><td colspan="9" class="empty-state">لا توجد أجهزة</td></tr>'}
             </tbody>
           </table>
@@ -1671,7 +1708,7 @@ async function loadInventoryBody(mode) {
       });
     }
   } catch (err) {
-    wrap.innerHTML = `<div class="empty-state">${err.message}</div>`;
+    wrap.innerHTML = `<div class="empty-state">${escHtml(err.message)}</div>`;
   }
 }
 
@@ -1680,8 +1717,8 @@ async function loadInventoryBody(mode) {
 function openEditAccessoryForm(item, onSaved) {
   const overlay = openModal('تعديل الصنف', `
     <form id="edit-acc-form">
-      <div class="field"><label>اسم الصنف</label><input name="name" value="${item.name}" required /></div>
-      <div class="field"><label>كود المنتج</label><input name="code" value="${item.code || ''}" /></div>
+      <div class="field"><label>اسم الصنف</label><input name="name" value="${escHtml(item.name)}" required /></div>
+      <div class="field"><label>كود المنتج</label><input name="code" value="${escHtml(item.code || '')}" /></div>
       <div class="grid grid-2">
         <div class="field"><label>سعر الجملة</label><input type="number" name="wholesalePrice" value="${item.wholesalePrice}" required /></div>
         <div class="field"><label>سعر المكسب</label><input type="number" name="profitPrice" value="${item.profitPrice}" required /></div>
@@ -1705,6 +1742,8 @@ function openEditAccessoryForm(item, onSaved) {
     el.querySelector('#cancel-btn').addEventListener('click', function () { overlay.remove(); });
     el.querySelector('#edit-acc-form').addEventListener('submit', async function (e) {
       e.preventDefault();
+      if (overlay._busy) return; // منع الضغط مرتين (كان بيسجل البيع/التعديل مرتين)
+      overlay._busy = true;
       const fd = new FormData(e.target);
       try {
         const wr = readWarranty(fd);
@@ -1712,13 +1751,13 @@ function openEditAccessoryForm(item, onSaved) {
           warranty: wr.warranty, warrantyPeriod: wr.warrantyPeriod, id: item.id, name: fd.get('name'), code: fd.get('code'),
           modelId: fd.get('modelId') === null ? undefined : fd.get('modelId'),
           modelName: fd.get('modelId') === null ? undefined : accModelName(fd.get('modelId')),
-          wholesalePrice: fd.get('wholesalePrice'), profitPrice: fd.get('profitPrice'), quantity: fd.get('quantity')
+          wholesalePrice: fd.get('wholesalePrice'), profitPrice: fd.get('profitPrice'), quantity: numIfChanged(fd, 'quantity', item.quantity)
         });
         invalidateCache('listAccessoryItems');
         overlay.remove();
         toast('تم تعديل الصنف بنجاح', 'success');
         if (onSaved) onSaved(); else loadInventoryBody('accessories');
-      } catch (err) { toast(err.message, 'error'); }
+      } catch (err) { overlay._busy = false; toast(err.message, 'error'); }
     });
   });
 }
@@ -1726,13 +1765,13 @@ function openEditAccessoryForm(item, onSaved) {
 function openEditDeviceForm(device, onSaved) {
   const overlay = openModal('تعديل الجهاز', `
     <form id="edit-dev-form">
-      <div class="field"><label>اسم الجهاز</label><input name="name" value="${device.name}" required /></div>
-      <div class="field"><label>كود المنتج</label><input name="code" value="${device.code || ''}" /></div>
+      <div class="field"><label>اسم الجهاز</label><input name="name" value="${escHtml(device.name)}" required /></div>
+      <div class="field"><label>كود المنتج</label><input name="code" value="${escHtml(device.code || '')}" /></div>
       <div class="field">
         <label>نوع الجهاز</label>
         <select name="deviceType" required>
           ${Array.from(new Set(DEVICE_TYPE_PRESETS.concat([device.deviceType])))
-            .map(function (t) { return `<option value="${t}" ${t === device.deviceType ? 'selected' : ''}>${t}</option>`; }).join('')}
+            .map(function (t) { return `<option value="${escHtml(t)}" ${t === device.deviceType ? 'selected' : ''}>${escHtml(t)}</option>`; }).join('')}
         </select>
       </div>
       ${warrantyFieldsHtml(device.warranty, device.warrantyPeriod)}
@@ -1751,18 +1790,20 @@ function openEditDeviceForm(device, onSaved) {
     el.querySelector('#cancel-btn').addEventListener('click', function () { overlay.remove(); });
     el.querySelector('#edit-dev-form').addEventListener('submit', async function (e) {
       e.preventDefault();
+      if (overlay._busy) return; // منع الضغط مرتين (كان بيسجل البيع/التعديل مرتين)
+      overlay._busy = true;
       const fd = new FormData(e.target);
       try {
         const wr = readWarranty(fd);
         await apiWrite('updateDevice', {
           id: device.id, name: fd.get('name'), code: fd.get('code'), deviceType: fd.get('deviceType'), warranty: wr.warranty, warrantyPeriod: wr.warrantyPeriod,
-          wholesalePrice: fd.get('wholesalePrice'), profitPrice: fd.get('profitPrice'), quantity: fd.get('quantity')
+          wholesalePrice: fd.get('wholesalePrice'), profitPrice: fd.get('profitPrice'), quantity: numIfChanged(fd, 'quantity', device.quantity)
         });
         invalidateCache('listDevices');
         overlay.remove();
         toast('تم تعديل الجهاز بنجاح', 'success');
         if (onSaved) onSaved(); else loadInventoryBody('devices');
-      } catch (err) { toast(err.message, 'error'); }
+      } catch (err) { overlay._busy = false; toast(err.message, 'error'); }
     });
   });
 }
@@ -1776,7 +1817,7 @@ async function renderAccounting() {
     const data = await cachedApi('accountingSummary');
     accountingRecordsCache = data.records;
   } catch (err) {
-    content().innerHTML = `<div class="empty-state">${err.message}</div>`;
+    content().innerHTML = `<div class="empty-state">${escHtml(err.message)}</div>`;
     return;
   }
 
@@ -1813,7 +1854,7 @@ function renderAccountingSummaryCards() {
     const v = byCategory[cat];
     return `<div class="card">
       <div style="font-size:22px;margin-bottom:6px">${icons[cat] || '📦'}</div>
-      <h3 style="margin:0 0 10px">${cat}</h3>
+      <h3 style="margin:0 0 10px">${escHtml(cat)}</h3>
       <div class="stat-label">بعت بإجمالي</div>
       <div class="stat-value brown" style="font-size:20px;margin-bottom:8px">${v.total.toLocaleString()} ج.م</div>
       <div class="stat-label">كسبت (المكسب)</div>
@@ -1852,7 +1893,7 @@ function renderAccountingTable(view) {
         <tbody>
           ${keys.map(function (k) {
             const v = map[k];
-            return `<tr><td>${k}</td><td>${v.wholesale.toLocaleString()} ج.م</td>
+            return `<tr><td>${escHtml(k)}</td><td>${v.wholesale.toLocaleString()} ج.م</td>
             <td>${v.profit.toLocaleString()} ج.م</td><td><strong>${v.total.toLocaleString()} ج.م</strong></td></tr>`;
           }).join('') || '<tr><td colspan="4" class="empty-state">لا توجد بيانات بعد</td></tr>'}
         </tbody>
@@ -1885,15 +1926,15 @@ async function loadUsersTable() {
         <thead><tr><th>الاسم</th><th>اسم المستخدم</th><th>الصلاحية</th><th>تاريخ الإنشاء</th></tr></thead>
         <tbody>
           ${data.items.map(function (u) {
-            return `<tr><td>${u.name}</td><td>${u.username}</td>
-            <td><span class="badge ${u.role === 'مدير النظام' ? 'badge-brown' : 'badge-slate'}">${u.role}</span></td>
-            <td>${u.createdAt}</td></tr>`;
+            return `<tr><td>${escHtml(u.name)}</td><td>${escHtml(u.username)}</td>
+            <td><span class="badge ${u.role === 'مدير النظام' ? 'badge-brown' : 'badge-slate'}">${escHtml(u.role)}</span></td>
+            <td>${escHtml(u.createdAt)}</td></tr>`;
           }).join('')}
         </tbody>
       </table>
     `;
   } catch (err) {
-    document.getElementById('users-table').innerHTML = `<div class="empty-state">${err.message}</div>`;
+    document.getElementById('users-table').innerHTML = `<div class="empty-state">${escHtml(err.message)}</div>`;
   }
 }
 
@@ -1928,6 +1969,13 @@ function openAddUserForm() {
       }, { successMsg: 'تمت إضافة الموظف', onDone: function () { loadUsersTable(); } });
     });
   });
+}
+
+// بنبعت الكمية للسيرفر بس لو الموظف غيّرها فعلًا، عشان تعديل السعر أو الاسم ميرجّعش مخزون قديم فوق بيع حصل من جهاز تاني
+function numIfChanged(fd, key, original) {
+  const v = fd.get(key);
+  if (v !== null && String(v).trim() !== '' && Number(v) === Number(original)) return undefined;
+  return v;
 }
 
 /* ============ الضمان (مشترك بين كل فورمات المنتجات) ============ */
@@ -2169,6 +2217,7 @@ document.addEventListener('keydown', function (e) {
   if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
   if (e.ctrlKey || e.altKey || e.metaKey) return;
   if (!CURRENT_USER) return;
+  if (document.querySelector('.modal-overlay')) return;
 
   const now = Date.now();
   // السكانر بيكتب بسرعة؛ نسمح بفاصل لحد 150ms (بدل 60) عشان السكانرات الأبطأ
@@ -2189,6 +2238,8 @@ document.addEventListener('keydown', function (e) {
 });
 
 function handleGlobalScan(code) {
+  if (document.querySelector('.modal-overlay')) return; // فيه نافذة مفتوحة: متسيبش السكانر يقفلها
+  if (CURRENT_SECTION === 'scan') readScanCustomer(); // نحفظ اسم/رقم العميل المكتوب قبل إعادة الرسم
   CURRENT_SECTION = 'scan';
   renderApp();
   setTimeout(function () {

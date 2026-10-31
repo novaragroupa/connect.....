@@ -1,7 +1,7 @@
 /* Service Worker — بيخلي الموقع يفتح من غير إنترنت.
    لو غيّرت أي ملف من ملفات الواجهة، النسخة الجديدة بتتحمل أوتوماتيك لما النت يكون شغال. */
 
-const CACHE = 'connect-shell-v1';
+const CACHE = 'connect-shell-v2';
 const SHELL = ['./', 'index.html', 'style.css', 'app.js', 'offline.js', 'config.js', 'manifest.json', 'logo-icon.webp', 'favicon.png'];
 
 self.addEventListener('install', function (e) {
@@ -34,7 +34,8 @@ function fetchWithTimeout(req, ms) {
 async function networkFirst(req, isNav) {
   const cache = await caches.open(CACHE);
   try {
-    const res = await fetchWithTimeout(req, 4000);
+    // no-cache: عشان GitHub Pages ميديناش نسخة قديمة من كاش المتصفح لحد 10 دقايق
+    const res = await fetchWithTimeout(new Request(req.url, { cache: 'no-cache', credentials: 'same-origin' }), 4000);
     if (res && res.ok) cache.put(req, res.clone());
     return res;
   } catch (e) {

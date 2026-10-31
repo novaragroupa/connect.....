@@ -36,8 +36,8 @@ function localNowStr() {
     pad2(d.getHours()) + ':' + pad2(d.getMinutes()) + ':' + pad2(d.getSeconds());
 }
 function escHtml(s) {
-  return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) {
-    return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c];
+  return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+    return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
   });
 }
 function num(v) { return Number(v) || 0; }
@@ -255,6 +255,71 @@ async function sellByCode(code, payload) {
   return apiWrite('sellDevice', Object.assign({}, payload, { deviceId: f.item.id }));
 }
 
+/* ---------- التحقق من البيانات قبل الحفظ (نفس قواعد السيرفر) ---------- */
+
+function vNum(v, label, o) {
+  o = o || {};
+  if (v === undefined || v === null || v === '') {
+    if (o.def !== undefined) return o.def;
+    throw new Error(label + ' مطلوب');
+  }
+  const n = Number(v);
+  if (!isFinite(n)) throw new Error(label + ' لازم يكون رقم صحيح');
+  if (o.min !== undefined && n < o.min) throw new Error(label + ' لازم يكون صفر أو أكتر');
+  if (o.gt !== undefined && n <= o.gt) throw new Error(label + ' لازم يكون أكبر من ' + o.gt);
+  if (o.int && Math.floor(n) !== n) throw new Error(label + ' لازم يكون عدد صحيح');
+  if (Math.abs(n) > 1e9) throw new Error(label + ' كبير بشكل غير منطقي');
+  return n;
+}
+function vReq(v, label) {
+  if (!String(v == null ? '' : v).trim()) throw new Error(label + ' مطلوب');
+}
+function validateOp(op) {
+  const p = op.payload;
+  switch (op.action) {
+    case 'addMaintenance':
+      if (['هاردوير', 'سوفتوير'].indexOf(p.deviceCategory) === -1) throw new Error('نوع الصيانة غير صحيح');
+      if (['كشف اعطال', 'عطل معروف'].indexOf(p.caseType) === -1) throw new Error('نوع الحالة غير صحيح');
+      vReq(p.deviceType, 'نوع الجهاز');
+      vNum(p.wholesaleCost, 'التكلفة', { def: 0, min: 0 }); vNum(p.profitCost, 'المكسب', { def: 0, min: 0 });
+      break;
+    case 'addAccessoryCategory':
+      vReq(String(p.name || '').replace('[كمبيوتر]', ''), 'اسم النوع');
+      break;
+    case 'addAccessoryItem':
+      vReq(p.name, 'اسم الصنف'); vReq(p.categoryId, 'النوع');
+      vNum(p.wholesalePrice, 'سعر الجملة', { def: 0, min: 0 }); vNum(p.profitPrice, 'سعر المكسب', { def: 0, min: 0 });
+      vNum(p.quantity, 'الكمية', { def: 0, min: 0, int: true });
+      break;
+    case 'addDevice':
+      vReq(p.name, 'اسم الجهاز');
+      if (['جديد', 'مستعمل'].indexOf(p.condition) === -1) throw new Error('حالة الجهاز غير صحيحة');
+      vNum(p.wholesalePrice, 'سعر الجملة', { def: 0, min: 0 }); vNum(p.profitPrice, 'سعر المكسب', { def: 0, min: 0 });
+      vNum(p.quantity, 'الكمية', { def: 0, min: 0, int: true });
+      break;
+    case 'addCashTransfer':
+      if (['ايداع', 'سحب'].indexOf(p.type) === -1) throw new Error('نوع العملية غير صحيح');
+      vReq(p.customerName, 'اسم العميل');
+      vNum(p.amount, 'المبلغ', { gt: 0 });
+      break;
+    case 'sellAccessoryItem':
+    case 'sellDevice':
+      vNum(p.quantity, 'الكمية', { def: 1, min: 1, int: true });
+      break;
+    case 'addReturn':
+      vNum(p.quantity, 'الكمية', { def: 1, min: 1, int: true });
+      if (p.refundAmount !== undefined && p.refundAmount !== '') vNum(p.refundAmount, 'المبلغ المرجّع', { min: 0 });
+      break;
+    case 'updateAccessoryItem':
+    case 'updateDevice':
+      if (p.name !== undefined && String(p.name).trim() === '') throw new Error('الاسم مطلوب');
+      if (p.wholesalePrice !== undefined) vNum(p.wholesalePrice, 'سعر الجملة', { min: 0 });
+      if (p.profitPrice !== undefined) vNum(p.profitPrice, 'سعر المكسب', { min: 0 });
+      if (p.quantity !== undefined) vNum(p.quantity, 'الكمية', { min: 0, int: true });
+      break;
+  }
+}
+
 /* ---------- الكتابة (طابور + تنفيذ محلي) ---------- */
 
 const ONLINE_ONLY = { addUser: 1 };
@@ -325,7 +390,7 @@ function localResult(op) {
     case 'sellAccessoryItem': {
       const item = findIn('listAccessoryItems', p.itemId);
       if (!item) throw new Error('الصنف غير موجود');
-      const qty = num(item.quantity), sq = Math.max(1, num(p.quantity) || 1);
+      const qty = num(item.quantity), sq = Math.max(1, Math.floor(num(p.quantity)) || 1);
       if (sq > qty) throw new Error('الكمية المطلوبة (' + sq + ') أكبر من المتاح بالمخزون (' + qty + ')');
       return { sale: { id: p.id, code: item.code || '', itemId: item.id, itemName: item.name, categoryName: item.categoryName,
         customerName: p.customerName || '', customerPhone: p.customerPhone || '', quantity: sq,
@@ -336,7 +401,7 @@ function localResult(op) {
     case 'sellDevice': {
       const dev = findIn('listDevices', p.deviceId);
       if (!dev) throw new Error('الجهاز غير موجود');
-      const qty = num(dev.quantity), sq = Math.max(1, num(p.quantity) || 1);
+      const qty = num(dev.quantity), sq = Math.max(1, Math.floor(num(p.quantity)) || 1);
       if (sq > qty) throw new Error('الكمية المطلوبة (' + sq + ') أكبر من المتاح بالمخزون (' + qty + ')');
       return { sale: { id: p.id, code: dev.code || '', deviceId: dev.id, deviceName: dev.name, deviceType: dev.deviceType || '',
         condition: dev.condition, warranty: dev.warranty, customerName: p.customerName || '',
@@ -462,6 +527,7 @@ async function apiWrite(action, payload) {
     return d;
   }
   const op = { opId: uuid(), action: action, payload: Object.assign({}, payload || {}) };
+  validateOp(op); // بيمنع حفظ بيانات غلط (أرقام سالبة، أسماء فاضية...) سواء أونلاين أو أوفلاين
   prepareOp(op);
 
   // لو النت شغال ومفيش حاجة مستنية: ابعت للسيرفر على طول (وتظهر أي أخطاء فورًا)
