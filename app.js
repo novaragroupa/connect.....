@@ -887,6 +887,23 @@ let currentAccCategory = null;
 let currentModelFilter = null; // null = صفحة الموديلات، '' = أصناف بدون موديل، غير كده id الموديل
 let currentModelName = '';
 
+// الموديل الفعلي للصنف: لو الـ modelId بتاعه مش موجود في قايمة الموديلات (مثلًا موديل اتضاف أوفلاين واتكرر)
+// بندوّر بنفس الاسم في نفس النوع، ولو مفيش بنعتبره "بدون موديل" عشان الصنف ميختفيش من الشاشة
+function effModelId(i) {
+  const id = String(i.modelId || '');
+  if (!id) return '';
+  const models = (LISTS.listAccessoryModels || {}).items || [];
+  if (models.some(function (m) { return String(m.id) === id; })) return id;
+  const nm = String(i.modelName || '').trim().toLowerCase();
+  if (nm) {
+    const m = models.find(function (x) {
+      return String(x.categoryId) === String(i.categoryId) && String(x.name).trim().toLowerCase() === nm;
+    });
+    if (m) return String(m.id);
+  }
+  return '';
+}
+
 function accModelName(id) {
   const m = ((LISTS.listAccessoryModels || {}).items || []).find(function (x) { return String(x.id) === String(id); });
   return m ? m.name : '';
@@ -1050,9 +1067,9 @@ async function renderAccessoryItems(catId, catName) {
     const res = await Promise.all([cachedApi('listAccessoryModels'), cachedApi('listAccessoryItems')]);
     const models = res[0].items.filter(function (m) { return String(m.categoryId) === String(catId); });
     const items = res[1].items.filter(function (i) { return String(i.categoryId) === String(catId); });
-    const noModel = items.filter(function (i) { return !i.modelId; }).length;
+    const noModel = items.filter(function (i) { return !effModelId(i); }).length;
     const cards = models.map(function (m) {
-      const count = items.filter(function (i) { return String(i.modelId) === String(m.id); }).length;
+      const count = items.filter(function (i) { return effModelId(i) === String(m.id); }).length;
       return `<div class="category-box" data-model-id="${escHtml(m.id)}">
         <div class="icon">📲</div><div class="name">${escHtml(m.name)}</div><div class="count">${count} صنف</div></div>`;
     });
@@ -1151,7 +1168,7 @@ async function loadItemsTable(catId) {
   try {
     const data = await cachedApi('listAccessoryItems');
     let rows = data.items.filter(function (i) { return String(i.categoryId) === String(catId); });
-    if (currentModelFilter !== null) rows = rows.filter(function (i) { return String(i.modelId || '') === currentModelFilter; });
+    if (currentModelFilter !== null) rows = rows.filter(function (i) { return effModelId(i) === currentModelFilter; });
     if (search) rows = rows.filter(function (i) { return i.name.toLowerCase().includes(search.toLowerCase()); });
     document.getElementById('items-table').innerHTML = rows.length ? `
       <table>
@@ -1727,7 +1744,7 @@ function openEditAccessoryForm(item, onSaved) {
         const ms = ((LISTS.listAccessoryModels || {}).items || []).filter(function (m) { return String(m.categoryId) === String(item.categoryId); });
         if (!ms.length) return '';
         return '<div class="field"><label>الموديل</label><select name="modelId"><option value="">بدون موديل</option>' +
-          ms.map(function (m) { return '<option value="' + escHtml(m.id) + '"' + (String(m.id) === String(item.modelId || '') ? ' selected' : '') + '>' + escHtml(m.name) + '</option>'; }).join('') +
+          ms.map(function (m) { return '<option value="' + escHtml(m.id) + '"' + (String(m.id) === effModelId(item) ? ' selected' : '') + '>' + escHtml(m.name) + '</option>'; }).join('') +
           '</select></div>';
       })()}
       ${warrantyFieldsHtml(item.warranty, item.warrantyPeriod)}
