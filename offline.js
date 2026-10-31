@@ -182,14 +182,21 @@ function cachedApi(action, payload, force) {
     const startedAt = Date.now();
     readStarted();
     try {
-      const data = await api(action);
+      const data = await api(action, null, 60000); // مهلة أطول لقراءة القوائم: Apps Script بيبطّأ مع كبر الشيت
       if (LAST_WRITE_DONE > startedAt && LISTS[action]) return LISTS[action]; // حصلت كتابة أثناء القراءة، النسخة دي قديمة
       LISTS[action] = { items: data.items || [] };
       LIST_TIME[action] = Date.now();
       persistList(action);
       return LISTS[action];
     } catch (err) {
-      if (err.isNetwork) return listFallback(action);
+      if (err.isNetwork) {
+        // النت شغال بس السيرفر ما ردّش: بنعرض النسخة المحفوظة لكن لازم المستخدم يعرف إنها ممكن تكون قديمة
+        if (navigator.onLine !== false && Date.now() - (window._staleWarnAt || 0) > 30000) {
+          window._staleWarnAt = Date.now();
+          toast('السيرفر بطيء — المعروض نسخة قديمة من الجهاز وقد ينقص منها حاجات. اضغط على حالة الاتصال فوق للتحديث.', 'error');
+        }
+        return listFallback(action);
+      }
       READ_FAILED = true;
       throw err;
     } finally {
