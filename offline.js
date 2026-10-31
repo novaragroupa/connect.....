@@ -622,7 +622,8 @@ function openFailedOps() {
   const rows = FAILED.map(function (f, i) {
     return '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 0;border-bottom:1px solid var(--border);font-size:13px">' +
       '<div><strong>' + escHtml(describeOp(f.op)) + '</strong> — <span style="color:var(--danger)">' + escHtml(f.error) + '</span></div>' +
-      '<button class="link-btn" data-failed-del="' + i + '" style="flex:none">حذف</button></div>';
+      '<div style="display:flex;gap:12px;flex:none"><button class="link-btn" data-failed-retry="' + i + '">إعادة المحاولة</button>' +
+      '<button class="link-btn" data-failed-del="' + i + '">حذف</button></div></div>';
   }).join('') || '<div class="empty-state">لا توجد عمليات فاشلة</div>';
 
   const overlay = openModal('عمليات فشلت',
@@ -630,6 +631,18 @@ function openFailedOps() {
     '<div class="modal-actions"><button type="button" class="btn btn-outline" id="close-failed">إغلاق</button></div>',
     function (el) {
       el.querySelector('#close-failed').addEventListener('click', function () { overlay.remove(); });
+      el.querySelectorAll('[data-failed-retry]').forEach(function (b) {
+        b.addEventListener('click', async function () {
+          const f = FAILED.splice(Number(b.getAttribute('data-failed-retry')), 1)[0];
+          if (f) QUEUE.push(f.op);
+          await saveFailed();
+          await saveQueue();
+          overlay.remove();
+          updateNetStatus();
+          if (FAILED.length) openFailedOps();
+          flushQueue();
+        });
+      });
       el.querySelectorAll('[data-failed-del]').forEach(function (b) {
         b.addEventListener('click', async function () {
           FAILED.splice(Number(b.getAttribute('data-failed-del')), 1);
