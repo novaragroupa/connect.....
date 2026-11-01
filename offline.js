@@ -219,7 +219,7 @@ function refreshAllLists() {
 
 // الحسابات بتتحسب من القوائم المحلية، فبتشتغل أوفلاين وبتشمل العمليات اللي لسه متترفعتش
 async function accountingFromLists() {
-  const r = await Promise.all([cachedApi('listMaintenance'), cachedApi('listAccessorySales'), cachedApi('listDeviceSales'), cachedApi('listReturns')]);
+  const r = await Promise.all([cachedApi('listMaintenance'), cachedApi('listAccessorySales'), cachedApi('listDeviceSales'), cachedApi('listReturns'), cachedApi('listCashTransfers')]);
   function rec(date, w, p, t, cat) {
     return { date: String(date).substring(0, 10), wholesale: num(w), profit: num(p), total: num(t), category: cat };
   }
@@ -232,6 +232,7 @@ async function accountingFromLists() {
     const t = -num(x.refundAmount);
     records.push(rec(x.date, w, t - w, t, x.saleType === 'device' ? 'اجهزة' : 'اكسسوارات'));
   });
+  ((r[4] || {}).items || []).forEach(function (c) { records.push(rec(c.date, 0, 0, c.amount, 'تحويلات كاش')); });
   return { ok: true, records: records };
 }
 
