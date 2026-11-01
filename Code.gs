@@ -903,6 +903,7 @@ function addCashTransfer_(body) {
     date: clientDate_(body)
   };
   appendObject_(sh, SCHEMAS.CashTransfers, obj);
+  invalidateAccountingCache_();
   return { item: obj };
 }
 
@@ -1001,7 +1002,7 @@ function addReturn_(body) {
 
 function accountingSummary_() {
   const scriptCache = CacheService.getScriptCache();
-  const cacheKey = 'accountingSummary_v3';
+  const cacheKey = 'accountingSummary_v4';
   const cached = scriptCache.get(cacheKey);
   if (cached) return JSON.parse(cached);
 
@@ -1032,11 +1033,16 @@ function accountingSummary_() {
     records.push(toRecord(r.date, w, t - w, t, r.saleType === 'device' ? 'اجهزة' : 'اكسسوارات'));
   });
 
+  // تحويلات الكاش: بتتسجل كقسم لوحدها (المبلغ بس، من غير جملة أو مكسب)
+  sheetToObjects_(getSheet_(SHEETS.CASH)).forEach(function (c) {
+    records.push(toRecord(c.date, 0, 0, c.amount, 'تحويلات كاش'));
+  });
+
   const result = { records: records };
   try { scriptCache.put(cacheKey, JSON.stringify(result), 30); } catch (e) { /* البيانات كبيرة جدًا على الكاش، مش مشكلة */ }
   return result;
 }
 
 function invalidateAccountingCache_() {
-  try { CacheService.getScriptCache().remove('accountingSummary_v3'); } catch (e) { /* تجاهل */ }
+  try { CacheService.getScriptCache().remove('accountingSummary_v4'); } catch (e) { /* تجاهل */ }
 }
