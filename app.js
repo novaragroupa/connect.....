@@ -316,6 +316,10 @@ async function renderDashboard() {
       const refund = Number(r.refundAmount || 0);
       return t + (r.restock === 'نعم' ? refund - Number(r.wholesalePrice || 0) : refund);
     }, 0);
+    // تحويلات الكاش: بتظهر لوحدها (مش جوه المبيعات والأرباح) عشان مبلغ التحويل مش بيع
+    let cashToday = [];
+    try { cashToday = ((await cachedApi('listCashTransfers')).items || []).filter(function (r) { return String(r.date).substring(0, 10) === today; }); } catch (e) { /* ignore */ }
+    const cashTotal = cashToday.reduce(function (t, r) { return t + Number(r.amount || 0); }, 0);
     const lowStock = accItems.items.filter(function (i) { return Number(i.quantity) <= 2; }).length
       + devices.items.filter(function (i) { return Number(i.quantity) <= 2; }).length;
 
@@ -325,6 +329,8 @@ async function renderDashboard() {
         <div class="card stat-card"><div class="stat-label">أرباح اليوم</div><div class="stat-value dark">${(todayProfit - retProfit).toLocaleString()} ج.م</div></div>
         <div class="card stat-card"><div class="stat-label">عمليات اليوم</div><div class="stat-value dark">${todaySales.length}</div></div>
         <div class="card stat-card"><div class="stat-label">أصناف على وشك النفاذ</div><div class="stat-value brown">${lowStock}</div></div>
+        <div class="card stat-card"><div class="stat-label">تحويلات كاش اليوم (المبلغ)</div><div class="stat-value dark">${cashTotal.toLocaleString()} ج.م</div></div>
+        <div class="card stat-card"><div class="stat-label">عدد تحويلات الكاش اليوم</div><div class="stat-value dark">${cashToday.length}</div></div>
       </div>
       <div class="card" style="margin-top:20px">
         <h3 style="margin-top:0">آخر العمليات اليوم</h3>
@@ -332,10 +338,10 @@ async function renderDashboard() {
           <table>
             <thead><tr><th>الوقت</th><th>النوع</th><th>العميل</th><th>الإجمالي</th><th>الموظف</th></tr></thead>
             <tbody>
-              ${todaySales.slice().sort(function (a, b) { return String(a.date).localeCompare(String(b.date)); }).slice(-10).reverse().map(function (r) {
-                const type = r.deviceCategory ? 'صيانة' : (r.categoryName ? 'اكسسوار' : 'جهاز');
+              ${todaySales.concat(cashToday).slice().sort(function (a, b) { return String(a.date).localeCompare(String(b.date)); }).slice(-10).reverse().map(function (r) {
+                const type = r.deviceCategory ? 'صيانة' : (r.categoryName ? 'اكسسوار' : (r.amount !== undefined && r.type ? 'كاش — ' + r.type : 'جهاز'));
                 return `<tr><td>${String(r.date).substring(11)}</td><td>${type}</td><td>${escHtml(r.customerName || '-')}</td>
-                <td>${Number(r.total || r.totalPrice || 0).toLocaleString()} ج.م</td><td>${escHtml(r.employee || '-')}</td></tr>`;
+                <td>${Number(r.total || r.totalPrice || r.amount || 0).toLocaleString()} ج.م</td><td>${escHtml(r.employee || '-')}</td></tr>`;
               }).join('') || `<tr><td colspan="5" class="empty-state">لا توجد عمليات اليوم بعد</td></tr>`}
             </tbody>
           </table>
@@ -1599,7 +1605,20 @@ function openCashForm() {
           amount: fd.get('amount'), notes: fd.get('notes'), employee: CURRENT_USER.name
         });
         patchCacheAdd('listCashTransfers', res.item);
-      }, { successMsg: 'تم تسجيل العملية', onDone: function () { loadCashTable(); } });
+        return res;
+      }, {
+        successMsg: 'تم تسجيل العملية',
+        onDone: function (result) {
+          if (result && result.item) {
+            printReceipt({
+              customerName: result.item.customerName, customerPhone: result.item.customerPhone,
+              productName: 'تحويل كاش — ' + (result.item.type === 'سحب' ? 'سحب' : 'إيداع'),
+              employee: result.item.employee, total: result.item.amount
+            });
+          }
+          loadCashTable();
+        }
+      });
     });
   });
 }
@@ -1860,15 +1879,23 @@ async function renderAccounting() {
 }
 
 function renderAccountingSummaryCards() {
-  const byCategory = { 'صيانة': { total: 0, profit: 0 }, 'اكسسوارات': { total: 0, profit: 0 }, 'اجهزة': { total: 0, profit: 0 } };
+  const byCategory = { 'صيانة': { total: 0, profit: 0 }, 'اكسسوارات': { total: 0, profit: 0 }, 'اجهزة': { total: 0, profit: 0 }, 'تحويلات كاش': { total: 0, profit: 0 } };
   accountingRecordsCache.forEach(function (r) {
     if (!byCategory[r.category]) byCategory[r.category] = { total: 0, profit: 0 };
     byCategory[r.category].total += r.total;
     byCategory[r.category].profit += r.profit;
   });
-  const icons = { 'صيانة': '🛠️', 'اكسسوارات': '🎧', 'اجهزة': '📱' };
+  const icons = { 'صيانة': '🛠️', 'اكسسوارات': '🎧', 'اجهزة': '📱', 'تحويلات كاش': '💵' };
   document.getElementById('acc-summary-cards').innerHTML = Object.keys(byCategory).map(function (cat) {
     const v = byCategory[cat];
+    if (cat === 'تحويلات كاش') {
+      return `<div class="card">
+      <div style="font-size:22px;margin-bottom:6px">${icons[cat]}</div>
+      <h3 style="margin:0 0 10px">${escHtml(cat)}</h3>
+      <div class="stat-label">إجمالي مبالغ التحويلات (إيداع + سحب)</div>
+      <div class="stat-value brown" style="font-size:20px">${v.total.toLocaleString()} ج.م</div>
+    </div>`;
+    }
     return `<div class="card">
       <div style="font-size:22px;margin-bottom:6px">${icons[cat] || '📦'}</div>
       <h3 style="margin:0 0 10px">${escHtml(cat)}</h3>
@@ -1888,7 +1915,8 @@ function renderAccountingTable(view) {
     const map = {};
     records.forEach(function (r) {
       const key = keyFn(r);
-      if (!map[key]) map[key] = { wholesale: 0, profit: 0, total: 0 };
+      if (!map[key]) map[key] = { wholesale: 0, profit: 0, total: 0, cash: 0 };
+      if (r.category === 'تحويلات كاش' && view !== 'category') { map[key].cash += r.total; return; } // مبلغ التحويل مش بيع: عمود لوحده
       map[key].wholesale += r.wholesale;
       map[key].profit += r.profit;
       map[key].total += r.total;
@@ -1906,13 +1934,13 @@ function renderAccountingTable(view) {
   wrap.innerHTML = `
     <div class="table-wrap">
       <table>
-        <thead><tr><th>${headLabel}</th><th>سعر الجملة</th><th>المكسب</th><th>الإجمالي (اللي بعته)</th></tr></thead>
+        <thead><tr><th>${headLabel}</th><th>سعر الجملة</th><th>المكسب</th><th>الإجمالي (اللي بعته)</th><th>تحويلات كاش</th></tr></thead>
         <tbody>
           ${keys.map(function (k) {
             const v = map[k];
             return `<tr><td>${escHtml(k)}</td><td>${v.wholesale.toLocaleString()} ج.م</td>
-            <td>${v.profit.toLocaleString()} ج.م</td><td><strong>${v.total.toLocaleString()} ج.م</strong></td></tr>`;
-          }).join('') || '<tr><td colspan="4" class="empty-state">لا توجد بيانات بعد</td></tr>'}
+            <td>${v.profit.toLocaleString()} ج.م</td><td><strong>${v.total.toLocaleString()} ج.م</strong></td><td>${v.cash ? v.cash.toLocaleString() + ' ج.م' : '-'}</td></tr>`;
+          }).join('') || '<tr><td colspan="5" class="empty-state">لا توجد بيانات بعد</td></tr>'}
         </tbody>
       </table>
     </div>
