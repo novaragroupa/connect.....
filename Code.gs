@@ -76,6 +76,19 @@ const TEXT_COLS_ = { code: 1, customerPhone: 1 };
 
 const ROLE_ADMIN = 'مدير النظام';
 const ROLE_ACCOUNTS = 'حسابات';
+const ROLE_MANAGER = 'مدير (عرض فقط)'; // بيشوف من غير جملة/مكسب، ومينفعش يعدّل أي حاجة
+
+// أي حقل تكلفة أو مكسب بيتشال من الرد قبل ما يوصل لحساب المدير (بنعمل نسخة جديدة، مش بنمسح من الكاش)
+const COST_KEYS_ = { wholesalePrice: 1, profitPrice: 1, wholesaleCost: 1, profitCost: 1, wholesale: 1, profit: 1 };
+function stripCosts_(v) {
+  if (Array.isArray(v)) return v.map(stripCosts_);
+  if (v && typeof v === 'object') {
+    const o = {};
+    Object.keys(v).forEach(function (k) { if (!Object.prototype.hasOwnProperty.call(COST_KEYS_, k)) o[k] = stripCosts_(v[k]); });
+    return o;
+  }
+  return v;
+}
 
 function setupSheets() {
   const ss = getSpreadsheet_();
@@ -363,6 +376,7 @@ const ADMIN_ACTIONS = { addUser: 1, listUsers: 1 };
 
 function doPost(e) {
   let lock = null;
+  let viewer = null;
   try {
     if (!e || !e.postData || !e.postData.contents) return jsonOut_({ ok: false, error: 'طلب غير صحيح' });
     const body = JSON.parse(e.postData.contents);
@@ -372,6 +386,12 @@ function doPost(e) {
       const user = authUser_(body);
       if (!user) return jsonOut_({ ok: false, authError: true, error: 'انتهت الجلسة، سجّل الدخول من جديد' });
       if (has_(ADMIN_ACTIONS, action) && user.role !== ROLE_ADMIN) return jsonOut_({ ok: false, error: 'مش مسموح لك بالعملية دي' });
+      // المدير (عرض فقط): قراءة بس، أي كتابة أو تعديل أو رفع طابور بيترفض
+      if (user.role === ROLE_MANAGER && !(action === 'ping' || action === 'accountingSummary' || action === 'findProductByCode' ||
+          (/^list/.test(action) && action !== 'listUsers'))) {
+        return jsonOut_({ ok: false, error: 'حسابك للمشاهدة فقط، مش مسموح لك بأي تعديل' });
+      }
+      viewer = user;
     }
 
     // قفل: عشان لو جهازين رفعوا في نفس اللحظة العمليات متتداخلش وتبوّظ المخزون
@@ -383,7 +403,8 @@ function doPost(e) {
 
     const result = action === 'batch' ? runBatch_(body) : dispatch_(action, body);
     if (result && result.error) return jsonOut_({ ok: false, error: result.error });
-    return jsonOut_(Object.assign({ ok: true }, result));
+    const out = Object.assign({ ok: true }, result);
+    return jsonOut_(viewer && viewer.role === ROLE_MANAGER ? stripCosts_(out) : out);
   } catch (err) {
     return jsonOut_({ ok: false, error: String(err && err.message ? err.message : err) });
   } finally {
@@ -529,7 +550,7 @@ function addUser_(body) {
   const name = strIn_(body.name, 'اسم الموظف', { required: true, max: 100 });
   const password = String(body.password === undefined || body.password === null ? '' : body.password);
   if (password.length < 4) return { error: 'كلمة المرور لازم تكون 4 حروف أو أكتر' };
-  const role = oneOf_(body.role, [ROLE_ADMIN, ROLE_ACCOUNTS], 'الصلاحية');
+  const role = oneOf_(body.role, [ROLE_ADMIN, ROLE_ACCOUNTS, ROLE_MANAGER], 'الصلاحية');
   if (users.some(function (u) { return String(u.username).toLowerCase() === username.toLowerCase(); })) {
     return { error: 'اسم المستخدم موجود بالفعل' };
   }
@@ -1002,7 +1023,7 @@ function addReturn_(body) {
 
 function accountingSummary_() {
   const scriptCache = CacheService.getScriptCache();
-  const cacheKey = 'accountingSummary_v4';
+  const cacheKey = 'accountingSummary_v5';
   const cached = scriptCache.get(cacheKey);
   if (cached) return JSON.parse(cached);
 
@@ -1010,32 +1031,32 @@ function accountingSummary_() {
   const accSales = sheetToObjects_(getSheet_(SHEETS.ACC_SALES));
   const devSales = sheetToObjects_(getSheet_(SHEETS.DEVICE_SALES));
 
-  function toRecord(date, wholesale, profit, total, category) {
+  function toRecord(date, wholesale, profit, total, category, qty) {
     return { date: String(date).substring(0, 10), wholesale: Number(wholesale) || 0,
-      profit: Number(profit) || 0, total: Number(total) || 0, category: category };
+      profit: Number(profit) || 0, total: Number(total) || 0, category: category, qty: Number(qty) || 0 };
   }
 
   const records = [];
   maintenance.forEach(function (m) {
-    records.push(toRecord(m.date, m.wholesaleCost, m.profitCost, m.total, 'صيانة'));
+    records.push(toRecord(m.date, m.wholesaleCost, m.profitCost, m.total, 'صيانة', 1));
   });
   accSales.forEach(function (s) {
-    records.push(toRecord(s.date, s.wholesalePrice, s.profitPrice, s.totalPrice, 'اكسسوارات'));
+    records.push(toRecord(s.date, s.wholesalePrice, s.profitPrice, s.totalPrice, 'اكسسوارات', Number(s.quantity) || 1));
   });
   devSales.forEach(function (s) {
-    records.push(toRecord(s.date, s.wholesalePrice, s.profitPrice, s.totalPrice, 'اجهزة'));
+    records.push(toRecord(s.date, s.wholesalePrice, s.profitPrice, s.totalPrice, 'اجهزة', Number(s.quantity) || 1));
   });
 
   // المسترجع بيتخصم من قسمه (اكسسوارات / اجهزة): الإجمالي بالسالب، والجملة بترجع لو القطعة رجعت المخزون
   sheetToObjects_(getSheet_(SHEETS.RETURNS)).forEach(function (r) {
     const w = r.restock === 'نعم' ? -(Number(r.wholesalePrice) || 0) : 0;
     const t = -(Number(r.refundAmount) || 0);
-    records.push(toRecord(r.date, w, t - w, t, r.saleType === 'device' ? 'اجهزة' : 'اكسسوارات'));
+    records.push(toRecord(r.date, w, t - w, t, r.saleType === 'device' ? 'اجهزة' : 'اكسسوارات', -(Number(r.quantity) || 0)));
   });
 
   // تحويلات الكاش: بتتسجل كقسم لوحدها (المبلغ بس، من غير جملة أو مكسب)
   sheetToObjects_(getSheet_(SHEETS.CASH)).forEach(function (c) {
-    records.push(toRecord(c.date, 0, 0, c.amount, 'تحويلات كاش'));
+    records.push(toRecord(c.date, 0, 0, c.amount, 'تحويلات كاش', 1));
   });
 
   const result = { records: records };
@@ -1044,5 +1065,5 @@ function accountingSummary_() {
 }
 
 function invalidateAccountingCache_() {
-  try { CacheService.getScriptCache().remove('accountingSummary_v4'); } catch (e) { /* تجاهل */ }
+  try { CacheService.getScriptCache().remove('accountingSummary_v5'); } catch (e) { /* تجاهل */ }
 }
