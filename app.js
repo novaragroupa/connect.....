@@ -1933,12 +1933,15 @@ function renderAccountingTable(view) {
     const map = {};
     records.forEach(function (r) {
       const key = keyFn(r);
-      if (!map[key]) map[key] = { wholesale: 0, profit: 0, total: 0, cash: 0, qty: 0 };
+      if (!map[key]) map[key] = { wholesale: 0, profit: 0, total: 0, cash: 0, qty: 0, maint: 0, acc: 0, dev: 0 };
       if (r.category === 'تحويلات كاش' && view !== 'category') { map[key].cash += r.total; return; } // مبلغ التحويل مش بيع: عمود لوحده
       map[key].qty += (r.qty || 0);
       map[key].wholesale += r.wholesale;
       map[key].profit += r.profit;
       map[key].total += r.total;
+      if (r.category === 'صيانة') map[key].maint += r.total;
+      else if (r.category === 'اكسسوارات') map[key].acc += r.total;
+      else if (r.category === 'اجهزة') map[key].dev += r.total;
     });
     return map;
   }
@@ -1950,16 +1953,30 @@ function renderAccountingTable(view) {
   else { map = groupBy(function (r) { return r.category; }); headLabel = 'القسم'; }
 
   const keys = Object.keys(map).sort().reverse();
+  const byCat = view !== 'category'; // في الأيام/الشهور/السنين: عمود لكل قسم + الإجمالي
+  const fmt = function (n) { return n ? n.toLocaleString() + ' ج.م' : '-'; };
+  const tot = { wholesale: 0, profit: 0, total: 0, cash: 0, qty: 0, maint: 0, acc: 0, dev: 0 };
+  keys.forEach(function (k) { Object.keys(tot).forEach(function (f) { tot[f] += map[k][f] || 0; }); });
+
+  function cells(v) {
+    return (hideCosts() ? (byCat ? '' : '<td>' + (v.qty || 0).toLocaleString() + '</td>') : '<td>' + v.wholesale.toLocaleString() + ' ج.م</td><td>' + v.profit.toLocaleString() + ' ج.م</td>') +
+      (byCat ? '<td>' + fmt(v.maint) + '</td><td>' + fmt(v.acc) + '</td><td>' + fmt(v.dev) + '</td>' : '') +
+      '<td><strong>' + v.total.toLocaleString() + ' ج.م</strong></td><td>' + fmt(v.cash) + '</td>';
+  }
+  const head = '<th>' + headLabel + '</th>' +
+    (hideCosts() ? (byCat ? '' : '<th>العدد</th>') : '<th>سعر الجملة</th><th>المكسب</th>') +
+    (byCat ? '<th>🛠️ صيانة</th><th>🎧 إكسسوارات</th><th>📱 أجهزة</th>' : '') +
+    '<th>' + (byCat ? 'إجمالي كل الأقسام' : 'الإجمالي (اللي بعته)') + '</th><th>تحويلات كاش</th>';
+  const colspan = (hideCosts() ? (byCat ? 0 : 1) : 2) + (byCat ? 3 : 0) + 3;
+
   wrap.innerHTML = `
     <div class="table-wrap">
       <table>
-        <thead><tr><th>${headLabel}</th>${hideCosts() ? '<th>العدد</th>' : '<th>سعر الجملة</th><th>المكسب</th>'}<th>الإجمالي (اللي بعته)</th><th>تحويلات كاش</th></tr></thead>
+        <thead><tr>${head}</tr></thead>
         <tbody>
-          ${keys.map(function (k) {
-            const v = map[k];
-            return `<tr><td>${escHtml(k)}</td>${hideCosts() ? '<td>' + (v.qty || 0).toLocaleString() + '</td>' : '<td>' + v.wholesale.toLocaleString() + ' ج.م</td><td>' + v.profit.toLocaleString() + ' ج.م</td>'}<td><strong>${v.total.toLocaleString()} ج.م</strong></td><td>${v.cash ? v.cash.toLocaleString() + ' ج.م' : '-'}</td></tr>`;
-          }).join('') || '<tr><td colspan="5" class="empty-state">لا توجد بيانات بعد</td></tr>'}
+          ${keys.map(function (k) { return '<tr><td>' + escHtml(k) + '</td>' + cells(map[k]) + '</tr>'; }).join('') || '<tr><td colspan="' + colspan + '" class="empty-state">لا توجد بيانات بعد</td></tr>'}
         </tbody>
+        ${keys.length > 1 ? '<tfoot><tr style="font-weight:800;background:rgba(255,255,255,.04)"><td>المجموع</td>' + cells(tot) + '</tr></tfoot>' : ''}
       </table>
     </div>
   `;
