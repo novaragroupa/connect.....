@@ -232,7 +232,7 @@ async function accountingFromLists() {
     const t = -num(x.refundAmount);
     records.push(rec(x.date, w, t - w, t, x.saleType === 'device' ? 'اجهزة' : 'اكسسوارات', -num(x.quantity)));
   });
-  ((r[4] || {}).items || []).forEach(function (c) { records.push(rec(c.date, 0, 0, c.amount, 'تحويلات كاش')); });
+  ((r[4] || {}).items || []).forEach(function (c) { records.push(rec(c.date, 0, 0, c.amount, 'تحويلات كاش', 1)); });
   return { ok: true, records: records };
 }
 
@@ -529,6 +529,7 @@ function applyOp(op, result) {
 }
 
 async function apiWrite(action, payload) {
+  if (typeof isViewer === 'function' && isViewer()) throw new Error('حسابك للمشاهدة فقط، مش مسموح لك بأي تعديل');
   if (ONLINE_ONLY[action]) {
     const d = await api(action, payload);
     LAST_WRITE_QUEUED = false;
