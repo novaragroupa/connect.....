@@ -475,3 +475,13 @@ tbody tr:hover { background: var(--charcoal-3); }
 .net-chip.wait { background: rgba(224, 162, 106, 0.15); border-color: var(--copper); color: var(--copper-light); }
 .net-chip.sync { border-color: var(--copper); color: var(--copper-light); }
 .net-chip.bad { background: var(--danger); border-color: transparent; color: #fff; }
+
+
+/* ---------- حساب المدير (عرض فقط): إخفاء كل أزرار الإضافة والتعديل والبيع ---------- */
+body.viewer #add-maint-btn, body.viewer #add-cat-btn, body.viewer #add-model-btn, body.viewer #move-cat-btn,
+body.viewer #scan-add-btn, body.viewer #add-item-btn, body.viewer #add-device-type-btn, body.viewer #scan-add-device-btn,
+body.viewer #add-device-btn, body.viewer #add-cash-btn, body.viewer #add-user-btn,
+body.viewer [data-sell-id], body.viewer [data-edit-id], body.viewer [data-sell-device], body.viewer [data-edit-device],
+body.viewer [data-edit-acc-id], body.viewer [data-edit-dev-id], body.viewer [data-move-cat], body.viewer [data-ret] {
+  display: none !important;
+}
