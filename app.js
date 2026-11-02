@@ -4,7 +4,9 @@ try { CURRENT_USER = JSON.parse(localStorage.getItem('connect_user') || 'null');
 // جلسة قديمة من غير توقيع من السيرفر: لازم تسجيل دخول جديد (العمليات المحفوظة على الجهاز مش بتتأثر)
 if (CURRENT_USER && !CURRENT_USER.token) { CURRENT_USER = null; try { localStorage.removeItem('connect_user'); } catch (e) { /* تجاهل */ } }
 let CURRENT_SECTION = 'dashboard';
-let CACHE = {}; // كاش بسيط للبيانات المجلوبة من الشيت
+let CACHE = {};
+const ROLE_VIEWER = 'مدير (عرض فقط)';
+function isViewer() { return !!CURRENT_USER && CURRENT_USER.role === ROLE_VIEWER; } // كاش بسيط للبيانات المجلوبة من الشيت
 
 const root = document.getElementById('root');
 
@@ -143,6 +145,7 @@ async function saveInBackground(overlay, work, opts) {
 /* ============ تسجيل الدخول ============ */
 
 function renderLogin(errorMsg) {
+  document.body.classList.remove('viewer');
   root.innerHTML = `
     <div class="login-screen">
       <div class="login-card">
@@ -194,12 +197,12 @@ function logout() {
 
 const NAV_ITEMS = [
   { id: 'dashboard', label: 'الرئيسية', icon: '🏠' },
-  { id: 'scan', label: 'فاتورة بيع', icon: '🧾' },
+  { id: 'scan', label: 'فاتورة بيع', icon: '🧾', noViewer: true },
   { id: 'maintenance', label: 'الصيانة', icon: '🛠️' },
   { id: 'accessories', label: 'الإكسسوارات', icon: '🎧' },
   { id: 'devices', label: 'الأجهزة', icon: '📱' },
   { id: 'cash', label: 'تحويلات الكاش', icon: '💵' },
-  { id: 'inventory', label: 'المخزون', icon: '📦' },
+  { id: 'inventory', label: 'المخزون', icon: '📦', noViewer: true },
   { id: 'returns', label: 'المسترجع', icon: '↩️' },
   { id: 'accounting', label: 'الحسابات', icon: '📊' },
   { id: 'users', label: 'الموظفين', icon: '👤', adminOnly: true }
@@ -207,9 +210,11 @@ const NAV_ITEMS = [
 
 function renderApp() {
   if (!CURRENT_USER) return renderLogin();
+  document.body.classList.toggle('viewer', isViewer());
+  if (isViewer() && (CURRENT_SECTION === 'scan' || CURRENT_SECTION === 'inventory' || CURRENT_SECTION === 'users')) CURRENT_SECTION = 'dashboard';
 
   const navHtml = NAV_ITEMS
-    .filter(function (item) { return !item.adminOnly || CURRENT_USER.role === 'مدير النظام'; })
+    .filter(function (item) { return (!item.adminOnly || CURRENT_USER.role === 'مدير النظام') && !(item.noViewer && isViewer()); })
     .map(function (item) {
       return `<li><button class="nav-btn ${item.id === CURRENT_SECTION ? 'active' : ''}" data-nav="${escHtml(item.id)}">
         <span>${item.icon}</span><span class="label">${item.label}</span>
@@ -326,9 +331,9 @@ async function renderDashboard() {
     content().innerHTML = `
       <div class="grid grid-4">
         <div class="card stat-card"><div class="stat-label">مبيعات اليوم</div><div class="stat-value brown">${(todayTotal - retTotal).toLocaleString()} ج.م</div></div>
-        <div class="card stat-card"><div class="stat-label">أرباح اليوم</div><div class="stat-value dark">${(todayProfit - retProfit).toLocaleString()} ج.م</div></div>
+        ${isViewer() ? '' : `<div class="card stat-card"><div class="stat-label">أرباح اليوم</div><div class="stat-value dark">${(todayProfit - retProfit).toLocaleString()} ج.م</div></div>`}
         <div class="card stat-card"><div class="stat-label">عمليات اليوم</div><div class="stat-value dark">${todaySales.length}</div></div>
-        <div class="card stat-card"><div class="stat-label">أصناف على وشك النفاذ</div><div class="stat-value brown">${lowStock}</div></div>
+        ${isViewer() ? '' : `<div class="card stat-card"><div class="stat-label">أصناف على وشك النفاذ</div><div class="stat-value brown">${lowStock}</div></div>`}
         <div class="card stat-card"><div class="stat-label">تحويلات كاش اليوم (المبلغ)</div><div class="stat-value dark">${cashTotal.toLocaleString()} ج.م</div></div>
         <div class="card stat-card"><div class="stat-label">عدد تحويلات الكاش اليوم</div><div class="stat-value dark">${cashToday.length}</div></div>
       </div>
@@ -794,7 +799,7 @@ async function loadMaintenanceTable() {
       <table>
         <thead><tr>
           <th>التاريخ</th><th>الحالة</th><th>نوع الجهاز</th><th>العطل</th><th>العميل</th><th>الهاتف</th>
-          <th>سعر الجملة</th><th>المكسب</th><th>الإجمالي</th><th>ملاحظات</th><th>الموظف</th>
+          ${isViewer() ? '' : '<th>سعر الجملة</th><th>المكسب</th>'}<th>الإجمالي</th><th>ملاحظات</th><th>الموظف</th>
         </tr></thead>
         <tbody>
           ${rows.map(function (r) {
@@ -803,8 +808,8 @@ async function loadMaintenanceTable() {
               <td><span class="badge ${r.caseType === 'كشف اعطال' ? 'badge-slate' : 'badge-brown'}">${escHtml(r.caseType)}</span></td>
               <td>${escHtml(r.deviceType || '-')}</td><td>${escHtml(r.faultType || '-')}</td>
               <td>${escHtml(r.customerName || '-')}</td><td>${escHtml(r.customerPhone || '-')}</td>
-              <td>${Number(r.wholesaleCost).toLocaleString()}</td>
-              <td>${Number(r.profitCost).toLocaleString()}</td>
+              ${isViewer() ? '' : '<td>' + Number(r.wholesaleCost).toLocaleString() + '</td>'}
+              ${isViewer() ? '' : '<td>' + Number(r.profitCost).toLocaleString() + '</td>'}
               <td><strong>${Number(r.total).toLocaleString()}</strong></td>
               <td>${escHtml(r.notes || '-')}</td>
               <td>${escHtml(r.employee || '-')}</td>
@@ -1178,13 +1183,13 @@ async function loadItemsTable(catId) {
     if (search) rows = rows.filter(function (i) { return i.name.toLowerCase().includes(search.toLowerCase()); });
     document.getElementById('items-table').innerHTML = rows.length ? `
       <table>
-        <thead><tr><th>الكود</th><th>الاسم</th><th>الضمان</th><th>سعر الجملة</th><th>سعر المكسب</th><th>الإجمالي</th><th>الكمية</th><th>تاريخ الإضافة</th><th></th><th></th></tr></thead>
+        <thead><tr><th>الكود</th><th>الاسم</th><th>الضمان</th>${isViewer() ? '' : '<th>سعر الجملة</th><th>سعر المكسب</th>'}<th>الإجمالي</th><th>الكمية</th><th>تاريخ الإضافة</th><th></th><th></th></tr></thead>
         <tbody>
           ${rows.map(function (i) {
             return `<tr>
               <td><span class="badge badge-slate">${escHtml(i.code || '-')}</span></td>
-              <td>${escHtml(i.name)}</td><td><span class="badge ${i.warranty === 'له ضمان' ? 'badge-success' : 'badge-slate'}">${escHtml(warrantyLabel(i))}</span></td><td>${Number(i.wholesalePrice).toLocaleString()}</td>
-              <td>${Number(i.profitPrice).toLocaleString()}</td><td><strong>${Number(i.totalPrice).toLocaleString()}</strong></td>
+              <td>${escHtml(i.name)}</td><td><span class="badge ${i.warranty === 'له ضمان' ? 'badge-success' : 'badge-slate'}">${escHtml(warrantyLabel(i))}</span></td>${isViewer() ? '' : '<td>' + Number(i.wholesalePrice).toLocaleString() + '</td>'}
+              ${isViewer() ? '' : '<td>' + Number(i.profitPrice).toLocaleString() + '</td>'}<td><strong>${Number(i.totalPrice).toLocaleString()}</strong></td>
               <td>${i.quantity <= 2 ? '<span class="badge badge-danger">' + i.quantity + '</span>' : i.quantity}</td>
               <td>${escHtml(i.dateAdded)}</td>
               <td><button class="btn btn-primary btn-sm" data-sell-id="${escHtml(i.id)}">بيع للعميل</button></td>
@@ -1401,14 +1406,14 @@ async function loadDevicesTable() {
     if (search) rows = rows.filter(function (d) { return d.name.toLowerCase().includes(search.toLowerCase()); });
     document.getElementById('devices-table').innerHTML = rows.length ? `
       <table>
-        <thead><tr><th>الكود</th><th>الاسم</th><th>الضمان</th><th>سعر الجملة</th><th>سعر المكسب</th><th>الإجمالي</th><th>الكمية</th><th></th><th></th></tr></thead>
+        <thead><tr><th>الكود</th><th>الاسم</th><th>الضمان</th>${isViewer() ? '' : '<th>سعر الجملة</th><th>سعر المكسب</th>'}<th>الإجمالي</th><th>الكمية</th><th></th><th></th></tr></thead>
         <tbody>
           ${rows.map(function (d) {
             return `<tr>
               <td><span class="badge badge-slate">${escHtml(d.code || '-')}</span></td>
               <td>${escHtml(d.name)}</td>
               <td><span class="badge ${d.warranty === 'له ضمان' ? 'badge-success' : 'badge-slate'}">${escHtml(warrantyLabel(d))}</span></td>
-              <td>${Number(d.wholesalePrice).toLocaleString()}</td><td>${Number(d.profitPrice).toLocaleString()}</td>
+              ${isViewer() ? '' : '<td>' + Number(d.wholesalePrice).toLocaleString() + '</td>'}${isViewer() ? '' : '<td>' + Number(d.profitPrice).toLocaleString() + '</td>'}
               <td><strong>${Number(d.totalPrice).toLocaleString()}</strong></td>
               <td>${d.quantity <= 2 ? '<span class="badge badge-danger">' + d.quantity + '</span>' : d.quantity}</td>
               <td><button class="btn btn-primary btn-sm" data-sell-device="${escHtml(d.id)}">بيع للعميل</button></td>
@@ -1884,6 +1889,7 @@ function renderAccountingSummaryCards() {
     if (!byCategory[r.category]) byCategory[r.category] = { total: 0, profit: 0 };
     byCategory[r.category].total += r.total;
     byCategory[r.category].profit += r.profit;
+    byCategory[r.category].qty = (byCategory[r.category].qty || 0) + (r.qty || 0);
   });
   const icons = { 'صيانة': '🛠️', 'اكسسوارات': '🎧', 'اجهزة': '📱', 'تحويلات كاش': '💵' };
   document.getElementById('acc-summary-cards').innerHTML = Object.keys(byCategory).map(function (cat) {
@@ -1901,8 +1907,7 @@ function renderAccountingSummaryCards() {
       <h3 style="margin:0 0 10px">${escHtml(cat)}</h3>
       <div class="stat-label">بعت بإجمالي</div>
       <div class="stat-value brown" style="font-size:20px;margin-bottom:8px">${v.total.toLocaleString()} ج.م</div>
-      <div class="stat-label">كسبت (المكسب)</div>
-      <div class="stat-value dark" style="font-size:20px">${v.profit.toLocaleString()} ج.م</div>
+      ${isViewer() ? '<div class="stat-label">العدد</div><div class="stat-value dark" style="font-size:20px">' + (v.qty || 0).toLocaleString() + '</div>' : '<div class="stat-label">كسبت (المكسب)</div><div class="stat-value dark" style="font-size:20px">' + v.profit.toLocaleString() + ' ج.م</div>'}
     </div>`;
   }).join('');
 }
@@ -1915,8 +1920,9 @@ function renderAccountingTable(view) {
     const map = {};
     records.forEach(function (r) {
       const key = keyFn(r);
-      if (!map[key]) map[key] = { wholesale: 0, profit: 0, total: 0, cash: 0 };
+      if (!map[key]) map[key] = { wholesale: 0, profit: 0, total: 0, cash: 0, qty: 0 };
       if (r.category === 'تحويلات كاش' && view !== 'category') { map[key].cash += r.total; return; } // مبلغ التحويل مش بيع: عمود لوحده
+      map[key].qty += (r.qty || 0);
       map[key].wholesale += r.wholesale;
       map[key].profit += r.profit;
       map[key].total += r.total;
@@ -1934,12 +1940,11 @@ function renderAccountingTable(view) {
   wrap.innerHTML = `
     <div class="table-wrap">
       <table>
-        <thead><tr><th>${headLabel}</th><th>سعر الجملة</th><th>المكسب</th><th>الإجمالي (اللي بعته)</th><th>تحويلات كاش</th></tr></thead>
+        <thead><tr><th>${headLabel}</th>${isViewer() ? '<th>العدد</th>' : '<th>سعر الجملة</th><th>المكسب</th>'}<th>الإجمالي (اللي بعته)</th><th>تحويلات كاش</th></tr></thead>
         <tbody>
           ${keys.map(function (k) {
             const v = map[k];
-            return `<tr><td>${escHtml(k)}</td><td>${v.wholesale.toLocaleString()} ج.م</td>
-            <td>${v.profit.toLocaleString()} ج.م</td><td><strong>${v.total.toLocaleString()} ج.م</strong></td><td>${v.cash ? v.cash.toLocaleString() + ' ج.م' : '-'}</td></tr>`;
+            return `<tr><td>${escHtml(k)}</td>${isViewer() ? '<td>' + (v.qty || 0).toLocaleString() + '</td>' : '<td>' + v.wholesale.toLocaleString() + ' ج.م</td><td>' + v.profit.toLocaleString() + ' ج.م</td>'}<td><strong>${v.total.toLocaleString()} ج.م</strong></td><td>${v.cash ? v.cash.toLocaleString() + ' ج.م' : '-'}</td></tr>`;
           }).join('') || '<tr><td colspan="5" class="empty-state">لا توجد بيانات بعد</td></tr>'}
         </tbody>
       </table>
@@ -1994,6 +1999,7 @@ function openAddUserForm() {
         <select name="role" required>
           <option value="حسابات">حسابات</option>
           <option value="مدير النظام">مدير النظام</option>
+          <option value="مدير (عرض فقط)">مدير (عرض فقط)</option>
         </select>
       </div>
       <div class="modal-actions">
@@ -2267,7 +2273,7 @@ document.addEventListener('keydown', function (e) {
   const tag = (document.activeElement && document.activeElement.tagName) || '';
   if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
   if (e.ctrlKey || e.altKey || e.metaKey) return;
-  if (!CURRENT_USER) return;
+  if (!CURRENT_USER || isViewer()) return;
   if (document.querySelector('.modal-overlay')) return;
 
   const now = Date.now();
