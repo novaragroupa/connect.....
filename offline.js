@@ -220,17 +220,17 @@ function refreshAllLists() {
 // الحسابات بتتحسب من القوائم المحلية، فبتشتغل أوفلاين وبتشمل العمليات اللي لسه متترفعتش
 async function accountingFromLists() {
   const r = await Promise.all([cachedApi('listMaintenance'), cachedApi('listAccessorySales'), cachedApi('listDeviceSales'), cachedApi('listReturns'), cachedApi('listCashTransfers')]);
-  function rec(date, w, p, t, cat) {
-    return { date: String(date).substring(0, 10), wholesale: num(w), profit: num(p), total: num(t), category: cat };
+  function rec(date, w, p, t, cat, q) {
+    return { date: String(date).substring(0, 10), wholesale: num(w), profit: num(p), total: num(t), category: cat, qty: num(q) };
   }
   const records = [];
-  r[0].items.forEach(function (m) { records.push(rec(m.date, m.wholesaleCost, m.profitCost, m.total, 'صيانة')); });
-  r[1].items.forEach(function (s) { records.push(rec(s.date, s.wholesalePrice, s.profitPrice, s.totalPrice, 'اكسسوارات')); });
-  r[2].items.forEach(function (s) { records.push(rec(s.date, s.wholesalePrice, s.profitPrice, s.totalPrice, 'اجهزة')); });
+  r[0].items.forEach(function (m) { records.push(rec(m.date, m.wholesaleCost, m.profitCost, m.total, 'صيانة', 1)); });
+  r[1].items.forEach(function (s) { records.push(rec(s.date, s.wholesalePrice, s.profitPrice, s.totalPrice, 'اكسسوارات', num(s.quantity) || 1)); });
+  r[2].items.forEach(function (s) { records.push(rec(s.date, s.wholesalePrice, s.profitPrice, s.totalPrice, 'اجهزة', num(s.quantity) || 1)); });
   ((r[3] || {}).items || []).forEach(function (x) {
     const w = x.restock === 'نعم' ? -num(x.wholesalePrice) : 0;
     const t = -num(x.refundAmount);
-    records.push(rec(x.date, w, t - w, t, x.saleType === 'device' ? 'اجهزة' : 'اكسسوارات'));
+    records.push(rec(x.date, w, t - w, t, x.saleType === 'device' ? 'اجهزة' : 'اكسسوارات', -num(x.quantity)));
   });
   ((r[4] || {}).items || []).forEach(function (c) { records.push(rec(c.date, 0, 0, c.amount, 'تحويلات كاش')); });
   return { ok: true, records: records };
