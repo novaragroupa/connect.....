@@ -373,6 +373,8 @@ const BATCH_ALLOWED = {
 };
 const PUBLIC_ACTIONS = { ping: 1, login: 1 };
 const ADMIN_ACTIONS = { addUser: 1, listUsers: 1 };
+// صلاحية الحسابات: بتبيع وتسجّل عادي، بس مينفعش تضيف أو تعدّل أصناف/أجهزة (لأنها مبتشوفش الجملة والمكسب)
+const ACCOUNTS_BLOCKED = { addAccessoryItem: 1, updateAccessoryItem: 1, addDevice: 1, updateDevice: 1, moveAccessoryCategory: 1 };
 
 function doPost(e) {
   let lock = null;
@@ -391,6 +393,9 @@ function doPost(e) {
           (/^list/.test(action) && action !== 'listUsers'))) {
         return jsonOut_({ ok: false, error: 'حسابك للمشاهدة فقط، مش مسموح لك بأي تعديل' });
       }
+      if (user.role === ROLE_ACCOUNTS && has_(ACCOUNTS_BLOCKED, action)) {
+        return jsonOut_({ ok: false, error: 'مش مسموح لك بإضافة أو تعديل الأصناف' });
+      }
       viewer = user;
     }
 
@@ -401,10 +406,10 @@ function doPost(e) {
       catch (le) { lock = null; return jsonOut_({ ok: false, busy: true, error: 'السيرفر مشغول دلوقتي، هنحاول تاني تلقائي' }); }
     }
 
-    const result = action === 'batch' ? runBatch_(body) : dispatch_(action, body);
+    const result = action === 'batch' ? runBatch_(body, viewer) : dispatch_(action, body);
     if (result && result.error) return jsonOut_({ ok: false, error: result.error });
     const out = Object.assign({ ok: true }, result);
-    return jsonOut_(viewer && viewer.role === ROLE_MANAGER ? stripCosts_(out) : out);
+    return jsonOut_(viewer && (viewer.role === ROLE_MANAGER || viewer.role === ROLE_ACCOUNTS) ? stripCosts_(out) : out);
   } catch (err) {
     return jsonOut_({ ok: false, error: String(err && err.message ? err.message : err) });
   } finally {
@@ -458,7 +463,7 @@ function dispatch_(action, body) {
 }
 
 // رفع مجموعة عمليات بالترتيب في طلب واحد. كل عملية ليها نتيجتها (نجحت/فشلت) وفشل واحدة مبيوقفش الباقي.
-function runBatch_(body) {
+function runBatch_(body, user) {
   const ops = body.ops || [];
   if (ops.length > 50) return { error: 'عدد العمليات في الدفعة كبير' };
   const results = [];
@@ -466,6 +471,10 @@ function runBatch_(body) {
   for (let i = 0; i < ops.length; i++) {
     const op = ops[i] || {};
     try {
+      if (user && user.role === ROLE_ACCOUNTS && has_(ACCOUNTS_BLOCKED, op.action)) {
+        results.push({ ok: false, error: 'مش مسموح لك بإضافة أو تعديل الأصناف' });
+        continue;
+      }
       if (!has_(BATCH_ALLOWED, op.action)) {
         results.push({ ok: false, error: 'عملية غير مسموحة في الرفع الجماعي: ' + op.action });
         continue;

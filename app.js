@@ -6,7 +6,14 @@ if (CURRENT_USER && !CURRENT_USER.token) { CURRENT_USER = null; try { localStora
 let CURRENT_SECTION = 'dashboard';
 let CACHE = {};
 const ROLE_VIEWER = 'مدير (عرض فقط)';
-function isViewer() { return !!CURRENT_USER && CURRENT_USER.role === ROLE_VIEWER; } // كاش بسيط للبيانات المجلوبة من الشيت
+const ROLE_ACCOUNTS = 'حسابات';
+function isViewer() { return !!CURRENT_USER && CURRENT_USER.role === ROLE_VIEWER; }
+function isAccounts() { return !!CURRENT_USER && CURRENT_USER.role === ROLE_ACCOUNTS; }
+// بيشوف من غير سعر الجملة/المكسب: المدير (عرض فقط) وحساب الحسابات
+function hideCosts() { return isViewer() || isAccounts(); }
+// تعديل/إضافة أصناف وأجهزة: مش متاح للمدير (عرض فقط) ولا للحسابات
+function canEdit() { return !!CURRENT_USER && !isViewer() && !isAccounts(); }
+//  // كاش بسيط للبيانات المجلوبة من الشيت
 
 const root = document.getElementById('root');
 
@@ -202,7 +209,7 @@ const NAV_ITEMS = [
   { id: 'accessories', label: 'الإكسسوارات', icon: '🎧' },
   { id: 'devices', label: 'الأجهزة', icon: '📱' },
   { id: 'cash', label: 'تحويلات الكاش', icon: '💵' },
-  { id: 'inventory', label: 'المخزون', icon: '📦', noViewer: true },
+  { id: 'inventory', label: 'المخزون', icon: '📦', noViewer: true, noAccounts: true },
   { id: 'returns', label: 'المسترجع', icon: '↩️' },
   { id: 'accounting', label: 'الحسابات', icon: '📊' },
   { id: 'users', label: 'الموظفين', icon: '👤', adminOnly: true }
@@ -211,10 +218,11 @@ const NAV_ITEMS = [
 function renderApp() {
   if (!CURRENT_USER) return renderLogin();
   document.body.classList.toggle('viewer', isViewer());
+  if (isAccounts() && CURRENT_SECTION === 'inventory') CURRENT_SECTION = 'dashboard';
   if (isViewer() && (CURRENT_SECTION === 'scan' || CURRENT_SECTION === 'inventory' || CURRENT_SECTION === 'users')) CURRENT_SECTION = 'dashboard';
 
   const navHtml = NAV_ITEMS
-    .filter(function (item) { return (!item.adminOnly || CURRENT_USER.role === 'مدير النظام') && !(item.noViewer && isViewer()); })
+    .filter(function (item) { return (!item.adminOnly || CURRENT_USER.role === 'مدير النظام') && !(item.noViewer && isViewer()) && !(item.noAccounts && isAccounts()); })
     .map(function (item) {
       return `<li><button class="nav-btn ${item.id === CURRENT_SECTION ? 'active' : ''}" data-nav="${escHtml(item.id)}">
         <span>${item.icon}</span><span class="label">${item.label}</span>
@@ -331,7 +339,7 @@ async function renderDashboard() {
     content().innerHTML = `
       <div class="grid grid-4">
         <div class="card stat-card"><div class="stat-label">مبيعات اليوم</div><div class="stat-value brown">${(todayTotal - retTotal).toLocaleString()} ج.م</div></div>
-        ${isViewer() ? '' : `<div class="card stat-card"><div class="stat-label">أرباح اليوم</div><div class="stat-value dark">${(todayProfit - retProfit).toLocaleString()} ج.م</div></div>`}
+        ${hideCosts() ? '' : `<div class="card stat-card"><div class="stat-label">أرباح اليوم</div><div class="stat-value dark">${(todayProfit - retProfit).toLocaleString()} ج.م</div></div>`}
         <div class="card stat-card"><div class="stat-label">عمليات اليوم</div><div class="stat-value dark">${todaySales.length}</div></div>
         ${isViewer() ? '' : `<div class="card stat-card"><div class="stat-label">أصناف على وشك النفاذ</div><div class="stat-value brown">${lowStock}</div></div>`}
         <div class="card stat-card"><div class="stat-label">تحويلات كاش اليوم (المبلغ)</div><div class="stat-value dark">${cashTotal.toLocaleString()} ج.م</div></div>
@@ -799,7 +807,7 @@ async function loadMaintenanceTable() {
       <table>
         <thead><tr>
           <th>التاريخ</th><th>الحالة</th><th>نوع الجهاز</th><th>العطل</th><th>العميل</th><th>الهاتف</th>
-          ${isViewer() ? '' : '<th>سعر الجملة</th><th>المكسب</th>'}<th>الإجمالي</th><th>ملاحظات</th><th>الموظف</th>
+          ${hideCosts() ? '' : '<th>سعر الجملة</th><th>المكسب</th>'}<th>الإجمالي</th><th>ملاحظات</th><th>الموظف</th>
         </tr></thead>
         <tbody>
           ${rows.map(function (r) {
@@ -808,8 +816,8 @@ async function loadMaintenanceTable() {
               <td><span class="badge ${r.caseType === 'كشف اعطال' ? 'badge-slate' : 'badge-brown'}">${escHtml(r.caseType)}</span></td>
               <td>${escHtml(r.deviceType || '-')}</td><td>${escHtml(r.faultType || '-')}</td>
               <td>${escHtml(r.customerName || '-')}</td><td>${escHtml(r.customerPhone || '-')}</td>
-              ${isViewer() ? '' : '<td>' + Number(r.wholesaleCost).toLocaleString() + '</td>'}
-              ${isViewer() ? '' : '<td>' + Number(r.profitCost).toLocaleString() + '</td>'}
+              ${hideCosts() ? '' : '<td>' + Number(r.wholesaleCost).toLocaleString() + '</td>'}
+              ${hideCosts() ? '' : '<td>' + Number(r.profitCost).toLocaleString() + '</td>'}
               <td><strong>${Number(r.total).toLocaleString()}</strong></td>
               <td>${escHtml(r.notes || '-')}</td>
               <td>${escHtml(r.employee || '-')}</td>
@@ -1132,8 +1140,8 @@ async function renderModelItems(catId, catName, modelId, modelName) {
       <button class="link-btn" id="back-models">→ رجوع لموديلات ${escHtml(dispCat(catName))}</button>
       <div class="toolbar">
         <input type="text" id="item-search" placeholder="بحث باسم الصنف..." />
-        <button class="btn btn-dark btn-sm" id="scan-add-btn">🔍 إضافة/تعديل بالباركود</button>
-        <button class="btn btn-outline btn-sm" id="add-item-btn">+ إضافة صنف يدوي</button>
+        <button class="btn btn-dark btn-sm" id="scan-add-btn"${canEdit() ? '' : ' style="display:none"'}>🔍 إضافة/تعديل بالباركود</button>
+        <button class="btn btn-outline btn-sm" id="add-item-btn"${canEdit() ? '' : ' style="display:none"'}>+ إضافة صنف يدوي</button>
       </div>
     </div>
     <div id="items-table" class="table-wrap"><div class="empty-state">جاري التحميل...</div></div>
@@ -1183,17 +1191,17 @@ async function loadItemsTable(catId) {
     if (search) rows = rows.filter(function (i) { return i.name.toLowerCase().includes(search.toLowerCase()); });
     document.getElementById('items-table').innerHTML = rows.length ? `
       <table>
-        <thead><tr><th>الكود</th><th>الاسم</th><th>الضمان</th>${isViewer() ? '' : '<th>سعر الجملة</th><th>سعر المكسب</th>'}<th>الإجمالي</th><th>الكمية</th><th>تاريخ الإضافة</th><th></th><th></th></tr></thead>
+        <thead><tr><th>الكود</th><th>الاسم</th><th>الضمان</th>${hideCosts() ? '' : '<th>سعر الجملة</th><th>سعر المكسب</th>'}<th>الإجمالي</th><th>الكمية</th><th>تاريخ الإضافة</th><th></th><th></th></tr></thead>
         <tbody>
           ${rows.map(function (i) {
             return `<tr>
               <td><span class="badge badge-slate">${escHtml(i.code || '-')}</span></td>
-              <td>${escHtml(i.name)}</td><td><span class="badge ${i.warranty === 'له ضمان' ? 'badge-success' : 'badge-slate'}">${escHtml(warrantyLabel(i))}</span></td>${isViewer() ? '' : '<td>' + Number(i.wholesalePrice).toLocaleString() + '</td>'}
-              ${isViewer() ? '' : '<td>' + Number(i.profitPrice).toLocaleString() + '</td>'}<td><strong>${Number(i.totalPrice).toLocaleString()}</strong></td>
+              <td>${escHtml(i.name)}</td><td><span class="badge ${i.warranty === 'له ضمان' ? 'badge-success' : 'badge-slate'}">${escHtml(warrantyLabel(i))}</span></td>${hideCosts() ? '' : '<td>' + Number(i.wholesalePrice).toLocaleString() + '</td>'}
+              ${hideCosts() ? '' : '<td>' + Number(i.profitPrice).toLocaleString() + '</td>'}<td><strong>${Number(i.totalPrice).toLocaleString()}</strong></td>
               <td>${i.quantity <= 2 ? '<span class="badge badge-danger">' + i.quantity + '</span>' : i.quantity}</td>
               <td>${escHtml(i.dateAdded)}</td>
               <td><button class="btn btn-primary btn-sm" data-sell-id="${escHtml(i.id)}">بيع للعميل</button></td>
-              <td><button class="link-btn" data-edit-id="${escHtml(i.id)}">تعديل</button></td>
+              <td>${canEdit() ? '<button class="link-btn" data-edit-id="' + escHtml(i.id) + '">تعديل</button>' : ''}</td>
             </tr>`;
           }).join('')}
         </tbody>
@@ -1217,6 +1225,7 @@ async function loadItemsTable(catId) {
 }
 
 function openAddItemForm(catId, catName, prefillCode) {
+  if (!canEdit()) { toast('مش مسموح لك بالإضافة أو التعديل', 'error'); return; }
   const overlay = openModal('إضافة صنف جديد — ' + dispCat(catName) + (currentModelName ? ' / ' + escHtml(currentModelName) : ''), `
     <form id="item-form">
       <div class="field"><label>اسم الصنف</label><input name="name" required /></div>
@@ -1352,8 +1361,8 @@ async function renderDeviceTypeItems(type) {
     </div>
     <div class="section-header">
       <input type="text" id="device-search" placeholder="بحث باسم الجهاز..." />
-      <button class="btn btn-dark" id="scan-add-device-btn">🔍 إضافة/تعديل بالباركود</button>
-      <button class="btn btn-primary" id="add-device-btn">+ إضافة جهاز يدوي</button>
+      <button class="btn btn-dark" id="scan-add-device-btn"${canEdit() ? '' : ' style="display:none"'}>🔍 إضافة/تعديل بالباركود</button>
+      <button class="btn btn-primary" id="add-device-btn"${canEdit() ? '' : ' style="display:none"'}>+ إضافة جهاز يدوي</button>
     </div>
     <div id="devices-table" class="table-wrap"><div class="empty-state">جاري التحميل...</div></div>
   `;
@@ -1406,18 +1415,18 @@ async function loadDevicesTable() {
     if (search) rows = rows.filter(function (d) { return d.name.toLowerCase().includes(search.toLowerCase()); });
     document.getElementById('devices-table').innerHTML = rows.length ? `
       <table>
-        <thead><tr><th>الكود</th><th>الاسم</th><th>الضمان</th>${isViewer() ? '' : '<th>سعر الجملة</th><th>سعر المكسب</th>'}<th>الإجمالي</th><th>الكمية</th><th></th><th></th></tr></thead>
+        <thead><tr><th>الكود</th><th>الاسم</th><th>الضمان</th>${hideCosts() ? '' : '<th>سعر الجملة</th><th>سعر المكسب</th>'}<th>الإجمالي</th><th>الكمية</th><th></th><th></th></tr></thead>
         <tbody>
           ${rows.map(function (d) {
             return `<tr>
               <td><span class="badge badge-slate">${escHtml(d.code || '-')}</span></td>
               <td>${escHtml(d.name)}</td>
               <td><span class="badge ${d.warranty === 'له ضمان' ? 'badge-success' : 'badge-slate'}">${escHtml(warrantyLabel(d))}</span></td>
-              ${isViewer() ? '' : '<td>' + Number(d.wholesalePrice).toLocaleString() + '</td>'}${isViewer() ? '' : '<td>' + Number(d.profitPrice).toLocaleString() + '</td>'}
+              ${hideCosts() ? '' : '<td>' + Number(d.wholesalePrice).toLocaleString() + '</td>'}${hideCosts() ? '' : '<td>' + Number(d.profitPrice).toLocaleString() + '</td>'}
               <td><strong>${Number(d.totalPrice).toLocaleString()}</strong></td>
               <td>${d.quantity <= 2 ? '<span class="badge badge-danger">' + d.quantity + '</span>' : d.quantity}</td>
               <td><button class="btn btn-primary btn-sm" data-sell-device="${escHtml(d.id)}">بيع للعميل</button></td>
-              <td><button class="link-btn" data-edit-device="${escHtml(d.id)}">تعديل</button></td>
+              <td>${canEdit() ? '<button class="link-btn" data-edit-device="' + escHtml(d.id) + '">تعديل</button>' : ''}</td>
             </tr>`;
           }).join('')}
         </tbody>
@@ -1440,6 +1449,7 @@ async function loadDevicesTable() {
 }
 
 function openAddDeviceForm(presetType, prefillCode) {
+  if (!canEdit()) { toast('مش مسموح لك بالإضافة أو التعديل', 'error'); return; }
   const overlay = openModal('إضافة جهاز — ' + deviceTab, `
     <form id="device-form">
       <div class="field"><label>اسم الجهاز</label><input name="name" required /></div>
@@ -1633,6 +1643,7 @@ function openCashForm() {
 let inventoryMode = 'accessories';
 
 async function renderInventory() {
+  if (isAccounts()) { content().innerHTML = '<div class="empty-state">مش مسموح لك بالدخول هنا</div>'; return; }
   setBreadcrumb('كل المنتجات المتاحة بالمحل');
   content().innerHTML = `
     <div class="section-header">
@@ -1756,6 +1767,7 @@ async function loadInventoryBody(mode) {
 /* ============ الحسابات ============ */
 
 function openEditAccessoryForm(item, onSaved) {
+  if (!canEdit()) { toast('مش مسموح لك بالإضافة أو التعديل', 'error'); return; }
   const overlay = openModal('تعديل الصنف', `
     <form id="edit-acc-form">
       <div class="field"><label>اسم الصنف</label><input name="name" value="${escHtml(item.name)}" required /></div>
@@ -1804,6 +1816,7 @@ function openEditAccessoryForm(item, onSaved) {
 }
 
 function openEditDeviceForm(device, onSaved) {
+  if (!canEdit()) { toast('مش مسموح لك بالإضافة أو التعديل', 'error'); return; }
   const overlay = openModal('تعديل الجهاز', `
     <form id="edit-dev-form">
       <div class="field"><label>اسم الجهاز</label><input name="name" value="${escHtml(device.name)}" required /></div>
@@ -1907,7 +1920,7 @@ function renderAccountingSummaryCards() {
       <h3 style="margin:0 0 10px">${escHtml(cat)}</h3>
       <div class="stat-label">بعت بإجمالي</div>
       <div class="stat-value brown" style="font-size:20px;margin-bottom:8px">${v.total.toLocaleString()} ج.م</div>
-      ${isViewer() ? '<div class="stat-label">العدد</div><div class="stat-value dark" style="font-size:20px">' + (v.qty || 0).toLocaleString() + '</div>' : '<div class="stat-label">كسبت (المكسب)</div><div class="stat-value dark" style="font-size:20px">' + v.profit.toLocaleString() + ' ج.م</div>'}
+      ${hideCosts() ? '<div class="stat-label">العدد</div><div class="stat-value dark" style="font-size:20px">' + (v.qty || 0).toLocaleString() + '</div>' : '<div class="stat-label">كسبت (المكسب)</div><div class="stat-value dark" style="font-size:20px">' + v.profit.toLocaleString() + ' ج.م</div>'}
     </div>`;
   }).join('');
 }
@@ -1940,11 +1953,11 @@ function renderAccountingTable(view) {
   wrap.innerHTML = `
     <div class="table-wrap">
       <table>
-        <thead><tr><th>${headLabel}</th>${isViewer() ? '<th>العدد</th>' : '<th>سعر الجملة</th><th>المكسب</th>'}<th>الإجمالي (اللي بعته)</th><th>تحويلات كاش</th></tr></thead>
+        <thead><tr><th>${headLabel}</th>${hideCosts() ? '<th>العدد</th>' : '<th>سعر الجملة</th><th>المكسب</th>'}<th>الإجمالي (اللي بعته)</th><th>تحويلات كاش</th></tr></thead>
         <tbody>
           ${keys.map(function (k) {
             const v = map[k];
-            return `<tr><td>${escHtml(k)}</td>${isViewer() ? '<td>' + (v.qty || 0).toLocaleString() + '</td>' : '<td>' + v.wholesale.toLocaleString() + ' ج.م</td><td>' + v.profit.toLocaleString() + ' ج.م</td>'}<td><strong>${v.total.toLocaleString()} ج.م</strong></td><td>${v.cash ? v.cash.toLocaleString() + ' ج.م' : '-'}</td></tr>`;
+            return `<tr><td>${escHtml(k)}</td>${hideCosts() ? '<td>' + (v.qty || 0).toLocaleString() + '</td>' : '<td>' + v.wholesale.toLocaleString() + ' ج.م</td><td>' + v.profit.toLocaleString() + ' ج.م</td>'}<td><strong>${v.total.toLocaleString()} ج.م</strong></td><td>${v.cash ? v.cash.toLocaleString() + ' ج.م' : '-'}</td></tr>`;
           }).join('') || '<tr><td colspan="5" class="empty-state">لا توجد بيانات بعد</td></tr>'}
         </tbody>
       </table>
