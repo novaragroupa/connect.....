@@ -48,7 +48,9 @@ const SHEETS = {
   DEVICE_SALES: 'DeviceSales',
   CASH: 'CashTransfers',
   RETURNS: 'Returns',
-  FAILED: 'FailedOps'
+  FAILED: 'FailedOps',
+  DEBTS: 'Debts',
+  DEBT_PAYMENTS: 'DebtPayments'
 };
 
 const SCHEMAS = {
@@ -60,19 +62,21 @@ const SCHEMAS = {
   AccessoryItems: ['id', 'code', 'categoryId', 'categoryName', 'name', 'wholesalePrice',
     'profitPrice', 'totalPrice', 'quantity', 'dateAdded', 'modelId', 'modelName', 'warranty', 'warrantyPeriod'],
   AccessorySales: ['id', 'code', 'itemId', 'itemName', 'categoryName', 'customerName',
-    'customerPhone', 'quantity', 'wholesalePrice', 'profitPrice', 'unitPrice', 'totalPrice', 'notes', 'employee', 'date', 'warranty', 'warrantyPeriod'],
+    'customerPhone', 'quantity', 'wholesalePrice', 'profitPrice', 'unitPrice', 'totalPrice', 'notes', 'employee', 'date', 'warranty', 'warrantyPeriod', 'discount'],
   Devices: ['id', 'code', 'deviceType', 'condition', 'name', 'wholesalePrice', 'profitPrice', 'totalPrice',
     'warranty', 'quantity', 'dateAdded', 'warrantyPeriod'],
   DeviceSales: ['id', 'code', 'deviceId', 'deviceName', 'deviceType', 'condition', 'warranty', 'customerName',
-    'customerPhone', 'quantity', 'wholesalePrice', 'profitPrice', 'unitPrice', 'totalPrice', 'notes', 'employee', 'date', 'warrantyPeriod'],
+    'customerPhone', 'quantity', 'wholesalePrice', 'profitPrice', 'unitPrice', 'totalPrice', 'notes', 'employee', 'date', 'warrantyPeriod', 'discount'],
   CashTransfers: ['id', 'type', 'customerName', 'customerPhone', 'amount', 'notes', 'employee', 'date'],
   Returns: ['id', 'date', 'saleType', 'saleId', 'itemId', 'itemName', 'code', 'customerName', 'customerPhone',
     'quantity', 'wholesalePrice', 'profitPrice', 'refundAmount', 'restock', 'reason', 'employee'],
-  FailedOps: ['id', 'date', 'action', 'error', 'payload']
+  FailedOps: ['id', 'date', 'action', 'error', 'payload'],
+  Debts: ['id', 'date', 'customerName', 'customerPhone', 'total', 'paid', 'remaining', 'dueDate', 'items', 'notes', 'employee', 'status'],
+  DebtPayments: ['id', 'debtId', 'date', 'amount', 'employee']
 };
 
 // أعمدة لازم ترجع دايمًا نص (الباركود والتليفون بيبدأوا بأصفار، والشيت كان بيحوّلهم لأرقام ويشيل الصفر)
-const TEXT_COLS_ = { code: 1, customerPhone: 1 };
+const TEXT_COLS_ = { code: 1, customerPhone: 1, dueDate: 1 };
 
 const ROLE_ADMIN = 'مدير النظام';
 const ROLE_ACCOUNTS = 'حسابات';
@@ -369,7 +373,7 @@ function doGet(e) {
 const BATCH_ALLOWED = {
   addMaintenance: 1, addAccessoryCategory: 1, addAccessoryModel: 1, addAccessoryItem: 1, sellAccessoryItem: 1,
   addDevice: 1, sellDevice: 1, addCashTransfer: 1, moveAccessoryCategory: 1,
-  updateAccessoryItem: 1, updateDevice: 1, addReturn: 1
+  updateAccessoryItem: 1, updateDevice: 1, addReturn: 1, addDebt: 1, payDebt: 1
 };
 const PUBLIC_ACTIONS = { ping: 1, login: 1 };
 const ADMIN_ACTIONS = { addUser: 1, listUsers: 1 };
@@ -457,6 +461,10 @@ function dispatch_(action, body) {
     case 'updateDevice': return updateDevice_(body);
     case 'addReturn': return addReturn_(body);
     case 'listReturns': return { items: sheetToObjects_(getSheet_(SHEETS.RETURNS)) };
+
+    case 'addDebt': return addDebt_(body);
+    case 'payDebt': return payDebt_(body);
+    case 'listDebts': return { items: sheetToObjects_(getSheet_(SHEETS.DEBTS)) };
 
     default: return { error: 'إجراء غير معروف: ' + action };
   }
@@ -768,6 +776,12 @@ function updateAccessoryItem_(body) {
   return { item: Object.assign({}, item, fields, { modelId: modelId, modelName: modelName }) };
 }
 
+// الخصم: بيتخصم من إجمالي السطر ومن المكسب (الجملة ثابتة). مينفعش يزيد عن إجمالي السطر
+function discountFor_(body, lineTotal) {
+  const d = numIn_(body.discount, 'الخصم', { def: 0, min: 0 });
+  return Math.round(Math.min(d, lineTotal) * 100) / 100;
+}
+
 function sellAccessoryItem_(body) {
   const sh = getSheet_(SHEETS.ACC_ITEMS);
   const salesSh = getSheet_(SHEETS.ACC_SALES);
@@ -789,6 +803,8 @@ function sellAccessoryItem_(body) {
     if (!body.fromBatch) return { error: 'الكمية المطلوبة (' + sellQty + ') أكبر من المتاح بالمخزون (' + qty + ')' };
     overNote = ' [تنبيه: المخزون وقت الرفع كان ' + qty + ' فقط]';
   }
+  const lineTotal = Number(item.totalPrice) * sellQty;
+  const disc = discountFor_(body, lineTotal);
   const sale = {
     id: clientId_(body),
     code: item.code || '',
@@ -799,9 +815,10 @@ function sellAccessoryItem_(body) {
     customerPhone: strIn_(body.customerPhone, 'رقم العميل', { max: 40 }),
     quantity: sellQty,
     wholesalePrice: Number(item.wholesalePrice) * sellQty,
-    profitPrice: Number(item.profitPrice) * sellQty,
+    profitPrice: Number(item.profitPrice) * sellQty - disc,
     unitPrice: item.totalPrice,
-    totalPrice: Number(item.totalPrice) * sellQty,
+    totalPrice: lineTotal - disc,
+    discount: disc,
     notes: strIn_(body.notes, 'الملاحظات', { max: 2000 }) + overNote,
     employee: strIn_(body.employee, 'الموظف', { max: 100 }),
     date: clientDate_(body),
@@ -891,6 +908,8 @@ function sellDevice_(body) {
     if (!body.fromBatch) return { error: 'الكمية المطلوبة (' + sellQty + ') أكبر من المتاح بالمخزون (' + qty + ')' };
     overNote = ' [تنبيه: المخزون وقت الرفع كان ' + qty + ' فقط]';
   }
+  const lineTotal = Number(dev.totalPrice) * sellQty;
+  const disc = discountFor_(body, lineTotal);
   const sale = {
     id: clientId_(body),
     code: dev.code || '',
@@ -903,9 +922,10 @@ function sellDevice_(body) {
     customerPhone: strIn_(body.customerPhone, 'رقم العميل', { max: 40 }),
     quantity: sellQty,
     wholesalePrice: Number(dev.wholesalePrice) * sellQty,
-    profitPrice: Number(dev.profitPrice) * sellQty,
+    profitPrice: Number(dev.profitPrice) * sellQty - disc,
     unitPrice: dev.totalPrice,
-    totalPrice: Number(dev.totalPrice) * sellQty,
+    totalPrice: lineTotal - disc,
+    discount: disc,
     notes: strIn_(body.notes, 'الملاحظات', { max: 2000 }) + overNote,
     employee: strIn_(body.employee, 'الموظف', { max: 100 }),
     date: clientDate_(body),
@@ -937,6 +957,64 @@ function addCashTransfer_(body) {
   return { item: obj };
 }
 
+/* ============ الآجل (ديون العملاء) ============ */
+
+function addDebt_(body) {
+  const sh = getSheet_(SHEETS.DEBTS);
+  if (body.id) { const dup = findObjById_(sh, body.id); if (dup) return { item: dup, duplicate: true }; }
+  const total = numIn_(body.total, 'إجمالي الفاتورة', { gt: 0 });
+  const paid = numIn_(body.paid, 'المدفوع', { def: 0, min: 0 });
+  if (paid >= total) return { error: 'المدفوع لازم يكون أقل من الإجمالي عشان يتسجل آجل' };
+  const obj = {
+    id: clientId_(body),
+    date: clientDate_(body),
+    customerName: strIn_(body.customerName, 'اسم العميل', { required: true }),
+    customerPhone: strIn_(body.customerPhone, 'رقم العميل', { max: 40 }),
+    total: total,
+    paid: paid,
+    remaining: Math.round((total - paid) * 100) / 100,
+    dueDate: strIn_(body.dueDate, 'ميعاد السداد', { max: 20 }),
+    items: strIn_(body.items, 'الأصناف', { max: 2000 }),
+    notes: strIn_(body.notes, 'الملاحظات', { max: 2000 }),
+    employee: strIn_(body.employee, 'الموظف', { max: 100 }),
+    status: 'مفتوح'
+  };
+  appendObject_(sh, SCHEMAS.Debts, obj);
+  return { item: obj };
+}
+
+function payDebt_(body) {
+  const sh = getSheet_(SHEETS.DEBTS);
+  const paySh = getSheet_(SHEETS.DEBT_PAYMENTS);
+  if (body.id) {
+    const dup = findObjById_(paySh, body.id);
+    if (dup) return { item: findObjById_(sh, dup.debtId), duplicate: true };
+  }
+  const f = findById_(sh, body.debtId);
+  if (!f) return { error: 'الآجل غير موجود' };
+  const d = f.obj;
+  const remaining = Number(d.remaining) || 0;
+  if (remaining <= 0) return { error: 'الآجل ده اتسدد بالكامل' };
+  let amount = numIn_(body.amount, 'المبلغ', { gt: 0 });
+  if (amount > remaining) {
+    if (!body.fromBatch) return { error: 'المبلغ أكبر من المتبقي (' + remaining + ')' };
+    amount = remaining;
+  }
+  const newRemaining = Math.round((remaining - amount) * 100) / 100;
+  const fields = {
+    paid: Math.round(((Number(d.paid) || 0) + amount) * 100) / 100,
+    remaining: newRemaining,
+    status: newRemaining <= 0 ? 'مسدد' : 'مفتوح'
+  };
+  if (newRemaining > 0 && body.dueDate) fields.dueDate = strIn_(body.dueDate, 'ميعاد السداد', { max: 20 });
+  appendObject_(paySh, SCHEMAS.DebtPayments, {
+    id: clientId_(body), debtId: d.id, date: clientDate_(body), amount: amount,
+    employee: strIn_(body.employee, 'الموظف', { max: 100 })
+  });
+  updateFields_(sh, SCHEMAS.Debts, d.id, fields);
+  return { item: Object.assign({}, d, fields) };
+}
+
 /* ============ البحث بالكود / البيع بالباركود ============ */
 
 function findProductByCode_(body) {
@@ -961,12 +1039,12 @@ function sellByCode_(body) {
   if (lookup.type === 'accessory') {
     return sellAccessoryItem_({
       itemId: lookup.item.id, customerName: body.customerName,
-      customerPhone: body.customerPhone, employee: body.employee, quantity: body.quantity, notes: body.notes
+      customerPhone: body.customerPhone, employee: body.employee, quantity: body.quantity, notes: body.notes, discount: body.discount
     });
   }
   return sellDevice_({
     deviceId: lookup.item.id, customerName: body.customerName,
-    customerPhone: body.customerPhone, employee: body.employee, quantity: body.quantity, notes: body.notes
+    customerPhone: body.customerPhone, employee: body.employee, quantity: body.quantity, notes: body.notes, discount: body.discount
   });
 }
 

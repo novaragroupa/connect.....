@@ -6,7 +6,7 @@
    ============================================================ */
 
 const LIST_ACTIONS = ['listMaintenance', 'listAccessoryCategories', 'listAccessoryModels', 'listAccessoryItems', 'listAccessorySales',
-  'listDevices', 'listDeviceSales', 'listCashTransfers', 'listReturns', 'listUsers'];
+  'listDevices', 'listDeviceSales', 'listCashTransfers', 'listReturns', 'listDebts', 'listUsers'];
 const MAIN_LISTS = LIST_ACTIONS.filter(function (a) { return a !== 'listUsers'; });
 
 const LISTS = {};        // action -> { items: [...] }  (آخر نسخة معروفة + العمليات المحلية)
@@ -313,6 +313,15 @@ function validateOp(op) {
     case 'sellAccessoryItem':
     case 'sellDevice':
       vNum(p.quantity, 'الكمية', { def: 1, min: 1, int: true });
+      if (p.discount !== undefined && p.discount !== '') vNum(p.discount, 'الخصم', { min: 0 });
+      break;
+    case 'addDebt':
+      vReq(p.customerName, 'اسم العميل');
+      vNum(p.total, 'إجمالي الفاتورة', { gt: 0 }); vNum(p.paid, 'المدفوع', { def: 0, min: 0 });
+      if (num(p.paid) >= num(p.total)) throw new Error('المدفوع لازم يكون أقل من الإجمالي عشان يتسجل آجل');
+      break;
+    case 'payDebt':
+      vNum(p.amount, 'المبلغ', { gt: 0 });
       break;
     case 'addReturn':
       vNum(p.quantity, 'الكمية', { def: 1, min: 1, int: true });
@@ -333,7 +342,7 @@ function validateOp(op) {
 const ONLINE_ONLY = { addUser: 1 };
 const NEW_ID_ACTIONS = {
   addMaintenance: 1, addAccessoryCategory: 1, addAccessoryModel: 1, addAccessoryItem: 1, addDevice: 1, addCashTransfer: 1,
-  sellAccessoryItem: 1, sellDevice: 1, addReturn: 1
+  sellAccessoryItem: 1, sellDevice: 1, addReturn: 1, addDebt: 1, payDebt: 1
 };
 
 function codeExistsLocal(code, exceptId) {
@@ -400,10 +409,11 @@ function localResult(op) {
       if (!item) throw new Error('الصنف غير موجود');
       const qty = num(item.quantity), sq = Math.max(1, Math.floor(num(p.quantity)) || 1);
       if (sq > qty) throw new Error('الكمية المطلوبة (' + sq + ') أكبر من المتاح بالمخزون (' + qty + ')');
+      const lineA = num(item.totalPrice) * sq, discA = Math.round(Math.min(num(p.discount), lineA) * 100) / 100;
       return { sale: { id: p.id, code: item.code || '', itemId: item.id, itemName: item.name, categoryName: item.categoryName,
         customerName: p.customerName || '', customerPhone: p.customerPhone || '', quantity: sq,
-        wholesalePrice: num(item.wholesalePrice) * sq, profitPrice: num(item.profitPrice) * sq,
-        unitPrice: item.totalPrice, totalPrice: num(item.totalPrice) * sq, notes: p.notes || '',
+        wholesalePrice: num(item.wholesalePrice) * sq, profitPrice: num(item.profitPrice) * sq - discA,
+        unitPrice: item.totalPrice, totalPrice: lineA - discA, discount: discA, notes: p.notes || '',
         employee: p.employee || '', date: p.date, warranty: item.warranty || 'بدون ضمان', warrantyPeriod: item.warrantyPeriod || '' }, remainingQuantity: qty - sq };
     }
     case 'sellDevice': {
@@ -411,11 +421,29 @@ function localResult(op) {
       if (!dev) throw new Error('الجهاز غير موجود');
       const qty = num(dev.quantity), sq = Math.max(1, Math.floor(num(p.quantity)) || 1);
       if (sq > qty) throw new Error('الكمية المطلوبة (' + sq + ') أكبر من المتاح بالمخزون (' + qty + ')');
+      const lineD = num(dev.totalPrice) * sq, discD = Math.round(Math.min(num(p.discount), lineD) * 100) / 100;
       return { sale: { id: p.id, code: dev.code || '', deviceId: dev.id, deviceName: dev.name, deviceType: dev.deviceType || '',
         condition: dev.condition, warranty: dev.warranty, customerName: p.customerName || '',
         customerPhone: p.customerPhone || '', quantity: sq, wholesalePrice: num(dev.wholesalePrice) * sq,
-        profitPrice: num(dev.profitPrice) * sq, unitPrice: dev.totalPrice, totalPrice: num(dev.totalPrice) * sq,
+        profitPrice: num(dev.profitPrice) * sq - discD, unitPrice: dev.totalPrice, totalPrice: lineD - discD, discount: discD,
         notes: p.notes || '', employee: p.employee || '', date: p.date, warrantyPeriod: dev.warrantyPeriod || '' }, remainingQuantity: qty - sq };
+    }
+    case 'addDebt': {
+      const total = num(p.total), paid = num(p.paid);
+      return { item: { id: p.id, date: p.date, customerName: p.customerName || '', customerPhone: p.customerPhone || '',
+        total: total, paid: paid, remaining: Math.round((total - paid) * 100) / 100, dueDate: p.dueDate || '',
+        items: p.items || '', notes: p.notes || '', employee: p.employee || '', status: 'مفتوح' } };
+    }
+    case 'payDebt': {
+      const d = findIn('listDebts', p.debtId);
+      if (!d) throw new Error('الآجل غير موجود');
+      const rem = num(d.remaining);
+      if (rem <= 0) throw new Error('الآجل ده اتسدد بالكامل');
+      const amt = num(p.amount);
+      if (amt > rem) throw new Error('المبلغ أكبر من المتبقي (' + rem + ')');
+      const left = Math.round((rem - amt) * 100) / 100;
+      return { item: Object.assign({}, d, { paid: Math.round((num(d.paid) + amt) * 100) / 100, remaining: left,
+        status: left <= 0 ? 'مسدد' : 'مفتوح', dueDate: (left > 0 && p.dueDate) ? p.dueDate : d.dueDate }) };
     }
     case 'addReturn': {
       const isDevR = p.saleType === 'device';
@@ -473,7 +501,7 @@ function localResult(op) {
 }
 
 function upsert(listName, obj) {
-  if (!LISTS[listName] && (listName === 'listAccessoryModels' || listName === 'listReturns')) LISTS[listName] = { items: [] };
+  if (!LISTS[listName] && (listName === 'listAccessoryModels' || listName === 'listReturns' || listName === 'listDebts')) LISTS[listName] = { items: [] };
   if (!LISTS[listName] || !obj) return;
   const arr = LISTS[listName].items;
   const i = arr.findIndex(function (x) { return String(x.id) === String(obj.id); });
@@ -491,6 +519,8 @@ function applyOp(op, result) {
     case 'addAccessoryItem': upsert('listAccessoryItems', r.item); break;
     case 'addDevice': upsert('listDevices', r.item); break;
     case 'addCashTransfer': upsert('listCashTransfers', r.item); break;
+    case 'addDebt':
+    case 'payDebt': upsert('listDebts', r.item); break;
     case 'updateAccessoryItem': upsert('listAccessoryItems', r.item); break;
     case 'updateDevice': upsert('listDevices', r.item); break;
     case 'sellAccessoryItem':
