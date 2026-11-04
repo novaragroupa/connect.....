@@ -2050,16 +2050,174 @@ function renderAccountingTable(view) {
   const colspan = (hideCosts() ? (byCat ? 0 : 1) : 2) + (byCat ? 3 : 0) + 3;
 
   wrap.innerHTML = `
+    ${view === 'daily' ? '<div class="stat-label" style="margin-bottom:8px">اضغط على أي يوم لعرض كل اللي اتباع فيه بالتفاصيل</div>' : ''}
     <div class="table-wrap">
       <table>
         <thead><tr>${head}</tr></thead>
         <tbody>
-          ${keys.map(function (k) { return '<tr><td>' + escHtml(k) + '</td>' + cells(map[k]) + '</tr>'; }).join('') || '<tr><td colspan="' + colspan + '" class="empty-state">لا توجد بيانات بعد</td></tr>'}
+          ${keys.map(function (k) { return '<tr' + (view === 'daily' ? ' data-day="' + escHtml(k) + '" style="cursor:pointer" title="اضغط لعرض تفاصيل اليوم"' : '') + '><td>' + escHtml(k) + (view === 'daily' ? ' <span style="opacity:.5">◂</span>' : '') + '</td>' + cells(map[k]) + '</tr>'; }).join('') || '<tr><td colspan="' + colspan + '" class="empty-state">لا توجد بيانات بعد</td></tr>'}
         </tbody>
         ${keys.length > 1 ? '<tfoot><tr style="font-weight:800;background:rgba(255,255,255,.04)"><td>المجموع</td>' + cells(tot) + '</tr></tfoot>' : ''}
       </table>
     </div>
   `;
+  if (view === 'daily') {
+    wrap.querySelectorAll('[data-day]').forEach(function (tr) {
+      tr.addEventListener('click', function () { openDayDetails(tr.getAttribute('data-day')); });
+    });
+  }
+}
+
+/* ---------- تفاصيل اليوم (بتفتح لما تدوس على يوم في الحسابات اليومية) ---------- */
+
+// بيجمع كل اللي اتباع/اتسجل في اليوم ده من القوائم المحلية (فبيشتغل أوفلاين كمان)
+async function loadDayRecords(day) {
+  const r = await Promise.all([cachedApi('listMaintenance'), cachedApi('listAccessorySales'), cachedApi('listDeviceSales'), cachedApi('listReturns'), cachedApi('listCashTransfers')]);
+  const inDay = function (x) { return String(x.date || '').substring(0, 10) === day; };
+  const timeOf = function (x) { const s = String(x.date || ''); return s.length >= 16 ? s.substring(11, 16) : ''; };
+  const out = { maint: [], acc: [], dev: [], cash: [] };
+
+  ((r[0] || {}).items || []).filter(inDay).forEach(function (m) {
+    out.maint.push({
+      key: String(m.date || ''), time: timeOf(m),
+      name: [m.deviceType, m.faultType || m.caseType].filter(Boolean).join(' - ') || 'صيانة',
+      sub: [m.deviceCategory, m.notes].filter(Boolean).join(' • '),
+      customer: m.customerName, phone: m.customerPhone, employee: m.employee,
+      qty: 1, wholesale: num(m.wholesaleCost), profit: num(m.profitCost), total: num(m.total)
+    });
+  });
+  ((r[1] || {}).items || []).filter(inDay).forEach(function (s) {
+    out.acc.push({
+      key: String(s.date || ''), time: timeOf(s), name: s.itemName,
+      sub: [s.categoryName, num(s.discount) > 0 ? 'خصم ' + num(s.discount).toLocaleString() + ' ج.م' : '', s.notes].filter(Boolean).join(' • '),
+      customer: s.customerName, phone: s.customerPhone, employee: s.employee,
+      qty: num(s.quantity) || 1, wholesale: num(s.wholesalePrice), profit: num(s.profitPrice), total: num(s.totalPrice)
+    });
+  });
+  ((r[2] || {}).items || []).filter(inDay).forEach(function (s) {
+    out.dev.push({
+      key: String(s.date || ''), time: timeOf(s), name: s.deviceName,
+      sub: [s.deviceType, s.condition, num(s.discount) > 0 ? 'خصم ' + num(s.discount).toLocaleString() + ' ج.م' : '', s.notes].filter(Boolean).join(' • '),
+      customer: s.customerName, phone: s.customerPhone, employee: s.employee,
+      qty: num(s.quantity) || 1, wholesale: num(s.wholesalePrice), profit: num(s.profitPrice), total: num(s.totalPrice)
+    });
+  });
+  // المرتجع بيتحسب في قسمه بالسالب (نفس منطق الحسابات)
+  ((r[3] || {}).items || []).filter(inDay).forEach(function (x) {
+    const w = x.restock === 'نعم' ? -num(x.wholesalePrice) : 0;
+    const t = -num(x.refundAmount);
+    (x.saleType === 'device' ? out.dev : out.acc).push({
+      key: String(x.date || ''), time: timeOf(x), name: 'مرتجع: ' + (x.itemName || ''),
+      sub: x.reason || '', customer: x.customerName, phone: x.customerPhone, employee: x.employee,
+      qty: -num(x.quantity), wholesale: w, profit: t - w, total: t, isReturn: true
+    });
+  });
+  ((r[4] || {}).items || []).filter(inDay).forEach(function (c) {
+    out.cash.push({
+      key: String(c.date || ''), time: timeOf(c), name: c.type || 'تحويل',
+      sub: c.notes || '', customer: c.customerName, phone: c.customerPhone, employee: c.employee,
+      qty: 1, wholesale: 0, profit: 0, total: num(c.amount)
+    });
+  });
+  Object.keys(out).forEach(function (k) { out[k].sort(function (a, b) { return a.key < b.key ? -1 : a.key > b.key ? 1 : 0; }); });
+  return out;
+}
+
+function dayDetailsHtml(day, d) {
+  const costs = !hideCosts(); // المدير (الأدمن) بيشوف الجملة والمكسب، الباقي الإجمالي بس
+  const money = function (n) { return num(n).toLocaleString() + ' ج.م'; };
+  const sections = [
+    { id: 'maint', title: '🛠️ صيانة', cash: false },
+    { id: 'acc', title: '🎧 إكسسوارات', cash: false },
+    { id: 'dev', title: '📱 أجهزة', cash: false },
+    { id: 'cash', title: '💵 تحويلات كاش', cash: true }
+  ];
+  const sum = function (rows, f) { return rows.reduce(function (t, x) { return t + num(x[f]); }, 0); };
+
+  let allW = 0, allP = 0, allT = 0, cashT = 0, count = 0;
+  let html = '';
+  sections.forEach(function (sec) {
+    const rows = d[sec.id];
+    if (!rows.length) return;
+    if (sec.cash) cashT += sum(rows, 'total');
+    else { allW += sum(rows, 'wholesale'); allP += sum(rows, 'profit'); allT += sum(rows, 'total'); count += rows.length; }
+    const showCosts = costs && !sec.cash;
+    const head = '<th>الوقت</th><th>' + (sec.cash ? 'النوع' : 'البيان') + '</th><th>العميل</th><th>الموظف</th>' +
+      (sec.cash ? '' : '<th>الكمية</th>') +
+      (showCosts ? '<th>الجملة</th><th>المكسب</th>' : '') +
+      '<th>' + (sec.cash ? 'المبلغ' : 'الإجمالي') + '</th>';
+    const body = rows.map(function (x) {
+      return '<tr' + (x.isReturn ? ' style="color:#f0a89f"' : '') + '><td>' + escHtml(x.time || '-') + '</td>' +
+        '<td>' + escHtml(x.name || '-') + (x.sub ? '<div class="muted-sub" style="font-size:11.5px;opacity:.7">' + escHtml(x.sub) + '</div>' : '') + '</td>' +
+        '<td>' + escHtml(x.customer || '-') + (x.phone ? '<div class="muted-sub" style="font-size:11.5px;opacity:.7">' + escHtml(x.phone) + '</div>' : '') + '</td>' +
+        '<td>' + escHtml(x.employee || '-') + '</td>' +
+        (sec.cash ? '' : '<td>' + x.qty.toLocaleString() + '</td>') +
+        (showCosts ? '<td>' + money(x.wholesale) + '</td><td>' + money(x.profit) + '</td>' : '') +
+        '<td><strong>' + money(x.total) + '</strong></td></tr>';
+    }).join('');
+    const foot = '<tr style="font-weight:800"><td colspan="' + (sec.cash ? 4 : 5) + '">إجمالي ' + sec.title.replace(/^\S+\s/, '') + '</td>' +
+      (showCosts ? '<td>' + money(sum(rows, 'wholesale')) + '</td><td>' + money(sum(rows, 'profit')) + '</td>' : '') +
+      '<td>' + money(sum(rows, 'total')) + '</td></tr>';
+    html += '<h4 class="day-sec-title" style="margin:18px 0 8px">' + sec.title + ' <span style="font-weight:400;opacity:.7">(' + rows.length + ')</span></h4>' +
+      '<div class="table-wrap"><table class="day-table"><thead><tr>' + head + '</tr></thead><tbody>' + body + '</tbody><tfoot>' + foot + '</tfoot></table></div>';
+  });
+
+  if (!html) return '<div class="empty-state">مفيش عمليات في اليوم ده</div>';
+
+  const summary = '<div class="grid grid-' + (costs ? '4' : '2') + ' day-summary" style="margin-bottom:6px">' +
+    '<div class="card stat-card"><div class="stat-label">إجمالي المبيعات</div><div class="stat-value brown" style="font-size:20px">' + money(allT) + '</div></div>' +
+    (costs ? '<div class="card stat-card"><div class="stat-label">سعر الجملة</div><div class="stat-value dark" style="font-size:20px">' + money(allW) + '</div></div>' +
+      '<div class="card stat-card"><div class="stat-label">المكسب</div><div class="stat-value dark" style="font-size:20px">' + money(allP) + '</div></div>' : '') +
+    '<div class="card stat-card"><div class="stat-label">تحويلات كاش</div><div class="stat-value dark" style="font-size:20px">' + money(cashT) + '</div></div>' +
+    '</div>';
+  return summary + html;
+}
+
+function printHtmlDoc(title, bodyHtml) {
+  const html = '<!DOCTYPE html><html dir="rtl"><head><meta charset="utf-8"><title>' + escHtml(title) + '</title><style>' +
+    '@page { size: A4; margin: 10mm; }' +
+    '* { box-sizing: border-box; }' +
+    'body { font-family: Tahoma, "Segoe UI", Arial, sans-serif; font-size: 12px; color: #000; background: #fff; margin: 0; }' +
+    'h2 { margin: 0 0 2px; } h4 { margin: 14px 0 6px; font-size: 14px; }' +
+    '.head { display: flex; justify-content: space-between; align-items: flex-end; border-bottom: 2px solid #000; padding-bottom: 6px; margin-bottom: 8px; }' +
+    '.grid { display: flex; gap: 8px; margin-bottom: 6px; } .card { border: 1px solid #000; padding: 6px 10px; flex: 1; }' +
+    '.stat-label { font-size: 11px; } .stat-value { font-size: 15px; font-weight: bold; }' +
+    'table { width: 100%; border-collapse: collapse; } th, td { border: 1px solid #555; padding: 4px 6px; text-align: right; vertical-align: top; }' +
+    'thead th { background: #eee; } tfoot td { background: #f5f5f5; }' +
+    'tr { page-break-inside: avoid; }' +
+    '</style></head><body>' + bodyHtml + '</body></html>';
+  const frame = document.createElement('iframe');
+  frame.style.cssText = 'position:fixed;right:0;bottom:0;width:0;height:0;border:0;visibility:hidden';
+  document.body.appendChild(frame);
+  const doc = frame.contentWindow.document;
+  doc.open(); doc.write(html); doc.close();
+  setTimeout(function () {
+    try { frame.contentWindow.focus(); frame.contentWindow.print(); } catch (e) { toast('تعذرت الطباعة: ' + e.message, 'error'); }
+    setTimeout(function () { frame.remove(); }, 60000);
+  }, 300);
+}
+
+async function openDayDetails(day) {
+  const overlay = openModal('تفاصيل يوم ' + day, '<div class="empty-state">جاري التحميل...</div>', null);
+  overlay.querySelector('.modal').style.maxWidth = 'min(1000px, 100%)';
+  try {
+    const d = await loadDayRecords(day);
+    const inner = dayDetailsHtml(day, d);
+    const hasData = inner.indexOf('empty-state') === -1;
+    overlay.querySelector('#modal-body').innerHTML = inner +
+      '<div class="modal-actions" style="align-items:center">' +
+      (hasData ? '<button type="button" class="link-btn" id="day-print-btn">🖨️ طباعة</button>' : '') +
+      '<button type="button" class="btn btn-outline" id="day-close-btn" style="margin-right:auto">إغلاق</button></div>';
+    overlay.querySelector('#day-close-btn').addEventListener('click', function () { overlay.remove(); });
+    const pb = overlay.querySelector('#day-print-btn');
+    if (pb) pb.addEventListener('click', function () {
+      const printBody = '<div class="head"><div><h2>' + escHtml(SHOP_NAME) + '</h2><div>تقرير مبيعات يوم ' + escHtml(day) + '</div></div>' +
+        '<div>' + new Date().toLocaleString('en-GB') + '</div></div>' + inner;
+      printHtmlDoc('تقرير يوم ' + day, printBody);
+    });
+  } catch (err) {
+    overlay.querySelector('#modal-body').innerHTML = '<div class="empty-state">' + escHtml(err.message) + '</div>';
+  }
 }
 
 /* ============ الآجل (ديون العملاء) ============ */
