@@ -838,7 +838,7 @@ function openScanAddDeviceForm(code, onSaved) {
 let maintenanceTab = 'هاردوير';
 
 async function renderMaintenance() {
-  setBreadcrumb('هاردوير وسوفتوير — كشف أعطال أو عطل معروف');
+  setBreadcrumb('عمليات صيانة اليوم — هاردوير وسوفتوير (كل العمليات القديمة في الحسابات)');
   content().innerHTML = `
     <div class="tabs">
       <button class="tab-btn ${maintenanceTab === 'هاردوير' ? 'active' : ''}" data-tab="هاردوير">هاردوير</button>
@@ -873,7 +873,8 @@ async function loadMaintenanceTable() {
   const caseFilter = (document.getElementById('maint-filter-case') || {}).value || '';
   try {
     const data = await cachedApi('listMaintenance');
-    let rows = data.items.filter(function (r) { return r.deviceCategory === maintenanceTab; });
+    const today = localNowStr().substring(0, 10); // صفحة الصيانة بتعرض عمليات اليوم بس (الحسابات بتعرض كل اللي فات)
+    let rows = data.items.filter(function (r) { return r.deviceCategory === maintenanceTab && String(r.date).substring(0, 10) === today; });
     if (caseFilter) rows = rows.filter(function (r) { return r.caseType === caseFilter; });
     if (search) {
       const q = search.toLowerCase();
@@ -904,7 +905,7 @@ async function loadMaintenanceTable() {
             </tr>`;
           }).join('')}
         </tbody>
-      </table>` : `<div class="empty-state">لا توجد عمليات مطابقة</div>`;
+      </table>` : `<div class="empty-state">لا توجد عمليات صيانة اليوم</div>`;
   } catch (err) {
     document.getElementById('maint-table').innerHTML = `<div class="empty-state">${escHtml(err.message)}</div>`;
   }
@@ -970,7 +971,8 @@ function openMaintenanceForm() {
         onDone: function (result) {
           printReceipt({
             customerName: result.item.customerName, customerPhone: result.item.customerPhone,
-            productName: (result.item.deviceType || '') + ' - صيانة ' + tabAtSubmit,
+            productName: (result.item.deviceType || '') + ' (صيانة ' + tabAtSubmit + ')',
+            faultType: result.item.faultType || result.item.caseType || 'صيانة',
             employee: result.item.employee, total: result.item.total
           });
           loadMaintenanceTable();
@@ -2311,7 +2313,11 @@ function openPayDebtForm(d) {
         successMsg: 'تم تسجيل السداد',
         onDone: function (result) {
           const left = result && result.item ? Number(result.item.remaining) : Math.max(0, rem - amount);
-          printReceipt({ customerName: d.customerName, customerPhone: d.customerPhone, productName: 'سداد آجل — المتبقي ' + left.toLocaleString() + ' ج.م', employee: CURRENT_USER.name, total: amount });
+          printReceipt({
+            customerName: d.customerName, productName: 'سداد آجل' + (d.items ? ' — ' + d.items : ''), employee: CURRENT_USER.name,
+            total: Number(d.total) || amount,
+            payment: { paid: amount, remaining: left, dueDate: left > 0 ? (fd.get('dueDate') || debtDue(d)) : '' }
+          });
           if (CURRENT_SECTION === 'debts') renderDebts();
         }
       });
@@ -2711,7 +2717,8 @@ function openReturnForm(x) {
 function printReceipt(data) {
   // مقاس ورق الطابعة بالملي: 80 (XP-80 وأغلب موديلات Xprinter) أو 58 (XP-58). بيتغير من config.js
   const width = (typeof RECEIPT_WIDTH_MM !== 'undefined' && Number(RECEIPT_WIDTH_MM)) || 80;
-  const printable = width <= 58 ? 48 : 72;
+  const shopPhone = (typeof SHOP_PHONE !== 'undefined' && SHOP_PHONE) || '';
+  const logoUrl = new URL('logo-icon.webp', location.href).href;
   const now = new Date();
   const when = now.toLocaleDateString('en-GB') + '  ' + now.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
   const row = function (label, value) {
@@ -2723,6 +2730,7 @@ function printReceipt(data) {
     'html, body { margin: 0; padding: 0; background: #fff; color: #000; }' +
     'body { width: 100%; max-width: ' + width + 'mm; margin: 0 auto; padding: 3mm 3mm 6mm; font-family: Tahoma, "Segoe UI", Arial, sans-serif; font-size: 12px; line-height: 1.55; }' +
     '.center { text-align: center; }' +
+    '.logo { display: block; margin: 0 auto 4px; width: ' + (width <= 58 ? 16 : 22) + 'mm; height: auto; filter: grayscale(1) contrast(1.3); }' +
     'h2 { margin: 0 0 2px; font-size: 20px; }' +
     '.muted { font-size: 11px; }' +
     'hr { border: none; border-top: 1px dashed #000; margin: 6px 0; }' +
@@ -2732,19 +2740,24 @@ function printReceipt(data) {
     '.total { font-size: 16px; font-weight: bold; }' +
     '.item { margin: 4px 0; } .iname { font-weight: bold; }' +
     '</style></head><body>' +
-    '<div class="center"><h2>' + escHtml(SHOP_NAME) + '</h2><div class="muted">' + when + '</div></div><hr />' +
-    row('العميل:', data.customerName) + row('الهاتف:', data.customerPhone) + row('الموظف:', data.employee) + '<hr />' +
+    '<div class="center"><img class="logo" src="' + escHtml(logoUrl) + '" alt="" /><h2>' + escHtml(SHOP_NAME) + '</h2><div class="muted">' + when + '</div></div><hr />' +
+    row('العميل:', data.customerName) + row('الموظف:', data.employee) + '<hr />' +
     (data.items && data.items.length
       ? data.items.map(function (it) {
           return '<div class="item"><div class="iname">' + escHtml(it.name) + '</div>' +
             '<div class="row"><span class="l">' + it.qty + ' × ' + Number(it.unit).toLocaleString() + '</span><span class="v">' + Number(it.total).toLocaleString() + '</span></div>' +
             (it.warranty ? '<div class="muted">الضمان: ' + escHtml(it.warranty) + '</div>' : '') + '</div>';
         }).join('') + '<hr />'
-      : row('المنتج:', data.productName) + '<hr />') +
+      : (data.faultType ? row('نوع العطل:', data.faultType) : '') + (data.productName ? row(data.faultType ? 'الجهاز:' : 'المنتج:', data.productName) : '') + '<hr />') +
     (data.discount > 0 ? row('الإجمالي قبل الخصم:', Number(data.subtotal || 0).toLocaleString() + ' ج.م') + row('الخصم:', '- ' + Number(data.discount).toLocaleString() + ' ج.م') : '') +
     '<div class=\"row total\"><span class=\"l\">الإجمالي:</span><span class=\"v\">' + Number(data.total || 0).toLocaleString() + ' ج.م</span></div>' +
-    (data.debt ? row('المدفوع:', Number(data.debt.paid).toLocaleString() + ' ج.م') + row('المتبقي (آجل):', Number(data.debt.remaining).toLocaleString() + ' ج.م') + row('ميعاد السداد:', data.debt.dueDate) : '') + '<hr />' +
+    (data.debt ? row('المدفوع:', Number(data.debt.paid).toLocaleString() + ' ج.م') + row('المتبقي (آجل):', Number(data.debt.remaining).toLocaleString() + ' ج.م') + row('ميعاد السداد:', data.debt.dueDate) : '') +
+    (data.payment ? row('المسدد الآن:', Number(data.payment.paid).toLocaleString() + ' ج.م') +
+      (Number(data.payment.remaining) > 0
+        ? row('المتبقي:', Number(data.payment.remaining).toLocaleString() + ' ج.م') + (data.payment.dueDate ? row('ميعاد السداد:', data.payment.dueDate) : '')
+        : '<div class="center total">تم السداد بالكامل ✓</div>') : '') + '<hr />' +
     '<div class="center">شكرًا لتعاملكم معنا</div>' +
+    (shopPhone ? '<div class="center" style="margin-top:3px">للاستفسار: <b dir="ltr">' + escHtml(shopPhone) + '</b></div>' : '') +
     '</body></html>';
 
   // بنطبع من iframe مخفي بدل نافذة جديدة، عشان المتصفح ميحجبش النافذة وتشتغل حتى بعد عمليات أوفلاين
@@ -2753,10 +2766,22 @@ function printReceipt(data) {
   document.body.appendChild(frame);
   const doc = frame.contentWindow.document;
   doc.open(); doc.write(html); doc.close();
-  setTimeout(function () {
+  // نستنى اللوجو يحمّل قبل الطباعة (بحد أقصى ثانيتين، ولو فشل نطبع من غيره)
+  let printed = false;
+  function doPrint() {
+    if (printed) return;
+    printed = true;
     try { frame.contentWindow.focus(); frame.contentWindow.print(); } catch (e) { toast('تعذرت الطباعة: ' + e.message, 'error'); }
     setTimeout(function () { frame.remove(); }, 60000);
-  }, 300);
+  }
+  const logo = doc.querySelector('.logo');
+  if (logo && !logo.complete) {
+    logo.addEventListener('load', function () { setTimeout(doPrint, 100); });
+    logo.addEventListener('error', function () { logo.remove(); doPrint(); });
+    setTimeout(doPrint, 2000);
+  } else {
+    setTimeout(doPrint, 300);
+  }
 }
 
 /* ============ السكانر العام (يشتغل من أي مكان في النظام) ============ */

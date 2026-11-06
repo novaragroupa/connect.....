@@ -4,5 +4,8 @@ const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbwZJYstsoQpr5du
 
 const SHOP_NAME = "Connect";
 
+// رقم المحل اللي بيظهر في الريسيت (للاستفسار)
+const SHOP_PHONE = "01288838253";
+
 // عرض ورق طابعة الإيصالات بالملي: 80 (Xprinter XP-80) أو 58 (XP-58)
 const RECEIPT_WIDTH_MM = 80;
