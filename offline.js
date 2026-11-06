@@ -339,7 +339,7 @@ function validateOp(op) {
 
 /* ---------- الكتابة (طابور + تنفيذ محلي) ---------- */
 
-const ONLINE_ONLY = { addUser: 1 };
+const ONLINE_ONLY = { addUser: 1, addEmployee: 1, updateEmployee: 1, setAttendance: 1, addAdjustment: 1, deleteAdjustment: 1 };
 const NEW_ID_ACTIONS = {
   addMaintenance: 1, addAccessoryCategory: 1, addAccessoryModel: 1, addAccessoryItem: 1, addDevice: 1, addCashTransfer: 1,
   sellAccessoryItem: 1, sellDevice: 1, addReturn: 1, addDebt: 1, payDebt: 1

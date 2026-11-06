@@ -213,6 +213,7 @@ const NAV_ITEMS = [
   { id: 'returns', label: 'المسترجع', icon: '↩️' },
   { id: 'debts', label: 'الآجل', icon: '⏳' },
   { id: 'accounting', label: 'الحسابات', icon: '📊' },
+  { id: 'hr', label: 'الحضور والمرتبات', icon: '🧑‍💼', adminOnly: true },
   { id: 'users', label: 'الموظفين', icon: '👤', adminOnly: true }
 ];
 
@@ -282,7 +283,8 @@ function renderApp() {
     cash: renderCash,
     inventory: renderInventory,
     accounting: renderAccounting,
-    users: renderUsers
+    users: renderUsers,
+    hr: renderHr
   };
   updateNetStatus();
   (renderers[CURRENT_SECTION] || renderDashboard)();
@@ -2494,6 +2496,311 @@ function gsOpenDetail(t, r) {
     const go = el.querySelector('#gs-go');
     if (go) go.addEventListener('click', function () { overlay.remove(); CURRENT_SECTION = t.go; renderApp(); });
   });
+}
+
+/* ============ الحضور والمرتبات (مدير النظام فقط) ============ */
+
+let hrTab = 'payroll';
+let hrMonth = '';
+let hrAttDate = '';
+let HR = { emps: [], att: [], adj: [] };
+const HR_STATUSES = ['حاضر', 'غائب', 'متأخر', 'إجازة'];
+const HR_MONTH_DAYS = 30; // المرتب اليومي = المرتب الأساسي ÷ 30
+const HR_INP = 'padding:9px 12px;border-radius:8px;border:1px solid var(--border);background:var(--charcoal-3);color:var(--text)';
+
+function hrCurMonth() { if (!hrMonth) hrMonth = localNowStr().substring(0, 7); return hrMonth; }
+function hrCurDate() { if (!hrAttDate) hrAttDate = localNowStr().substring(0, 10); return hrAttDate; }
+function hrD(r) { return String(r.date || '').substring(0, 10); }
+function hrMoney(n) { return (Math.round(num(n) * 100) / 100).toLocaleString() + ' ج.م'; }
+function hrActive() { return HR.emps.filter(function (e) { return e.active !== 'لا'; }); }
+function hrEmp(id) { return HR.emps.filter(function (e) { return String(e.id) === String(id); })[0]; }
+function hrAttRec(empId, date) {
+  return HR.att.filter(function (a) { return String(a.employeeId) === String(empId) && hrD(a) === date; })[0];
+}
+function hrAttApply(empId, date, status, notes) {
+  HR.att = HR.att.filter(function (a) { return !(String(a.employeeId) === String(empId) && hrD(a) === date); });
+  if (status) HR.att.push({ employeeId: empId, employeeName: (hrEmp(empId) || {}).name || '', date: date, status: status, notes: notes || '' });
+}
+
+async function hrFetch() {
+  const r = await Promise.all([api('listEmployees'), api('listAttendance'), api('listAdjustments')]);
+  HR = { emps: r[0].items || [], att: r[1].items || [], adj: r[2].items || [] };
+}
+
+async function renderHr() {
+  if (!CURRENT_USER || CURRENT_USER.role !== 'مدير النظام') { content().innerHTML = '<div class="empty-state">هذا القسم لمدير النظام فقط</div>'; return; }
+  setBreadcrumb('أسماء الموظفين والحضور والغياب والمرتبات والخصومات والمكافآت');
+  content().innerHTML = '<div class="empty-state">جاري التحميل...</div>';
+  try { await hrFetch(); }
+  catch (err) {
+    const hint = err.message.indexOf('غير معروف') > -1 ? ' — لازم تحدّث Code.gs وتنشر نسخة جديدة' : (err.isNetwork ? ' — القسم ده محتاج إنترنت' : '');
+    content().innerHTML = '<div class="empty-state">' + escHtml(err.message + hint) + '</div>';
+    return;
+  }
+  drawHr();
+}
+
+async function hrReload() {
+  try { await hrFetch(); } catch (err) { toast(err.message, 'error'); }
+  if (CURRENT_SECTION === 'hr') drawHr();
+}
+
+function drawHr() {
+  const tab = function (id, label) { return '<button class="tab-btn ' + (hrTab === id ? 'active' : '') + '" data-hr-tab="' + id + '">' + label + '</button>'; };
+  content().innerHTML = '<div class="tabs">' + tab('payroll', '💰 المرتبات') + tab('attendance', '📅 الحضور والغياب') + tab('employees', '👥 الموظفين') + '</div><div id="hr-body"></div>';
+  content().querySelectorAll('[data-hr-tab]').forEach(function (b) {
+    b.addEventListener('click', function () { hrTab = b.getAttribute('data-hr-tab'); drawHr(); });
+  });
+  if (hrTab === 'employees') drawHrEmployees();
+  else if (hrTab === 'attendance') drawHrAttendance();
+  else drawHrPayroll();
+}
+
+/* ---------- الموظفين ---------- */
+
+function drawHrEmployees() {
+  const body = document.getElementById('hr-body');
+  body.innerHTML = '<div class="section-header"><div></div><button class="btn btn-primary" id="hr-add-emp">+ إضافة موظف</button></div>' +
+    '<div class="table-wrap"><table><thead><tr><th>الاسم</th><th>الوظيفة</th><th>الهاتف</th><th>المرتب الأساسي</th><th>تاريخ التعيين</th><th>الحالة</th><th></th></tr></thead><tbody>' +
+    (HR.emps.map(function (e) {
+      return '<tr><td><strong>' + escHtml(e.name) + '</strong></td><td>' + escHtml(e.jobTitle || '-') + '</td><td>' + escHtml(e.phone || '-') + '</td>' +
+        '<td>' + hrMoney(e.baseSalary) + '</td><td>' + escHtml(String(e.hireDate || '-').substring(0, 10)) + '</td>' +
+        '<td><span class="badge ' + (e.active === 'لا' ? 'badge-danger' : 'badge-success') + '">' + (e.active === 'لا' ? 'متوقف' : 'شغال') + '</span></td>' +
+        '<td><button class="link-btn" data-hr-edit="' + escHtml(e.id) + '">تعديل</button></td></tr>';
+    }).join('') || '<tr><td colspan="7" class="empty-state">لسه مفيش موظفين، ضيف أول موظف</td></tr>') +
+    '</tbody></table></div>';
+  document.getElementById('hr-add-emp').addEventListener('click', function () { openHrEmployeeForm(null); });
+  body.querySelectorAll('[data-hr-edit]').forEach(function (b) {
+    b.addEventListener('click', function () { openHrEmployeeForm(hrEmp(b.getAttribute('data-hr-edit'))); });
+  });
+}
+
+function openHrEmployeeForm(emp) {
+  const isEdit = !!emp;
+  emp = emp || {};
+  const overlay = openModal(isEdit ? 'تعديل موظف' : 'إضافة موظف', `
+    <form id="hr-emp-form">
+      <div class="field"><label>اسم الموظف</label><input name="name" value="${escHtml(emp.name || '')}" required /></div>
+      <div class="field"><label>الوظيفة</label><input name="jobTitle" value="${escHtml(emp.jobTitle || '')}" placeholder="مثال: فني صيانة، بائع" /></div>
+      <div class="field"><label>رقم الموبايل</label><input name="phone" value="${escHtml(emp.phone || '')}" /></div>
+      <div class="grid grid-2">
+        <div class="field"><label>المرتب الأساسي (شهري)</label><input type="number" name="baseSalary" min="0" step="any" value="${escHtml(emp.baseSalary === undefined ? 0 : emp.baseSalary)}" required /></div>
+        <div class="field"><label>تاريخ التعيين</label><input type="date" name="hireDate" value="${escHtml(String(emp.hireDate || '').substring(0, 10))}" /></div>
+      </div>
+      ${isEdit ? `<div class="field"><label>الحالة</label><select name="active">
+        <option value="نعم" ${emp.active === 'لا' ? '' : 'selected'}>شغال</option>
+        <option value="لا" ${emp.active === 'لا' ? 'selected' : ''}>متوقف (مش هيظهر في الحضور والمرتبات)</option></select></div>` : ''}
+      <div class="field"><label>ملاحظات (اختياري)</label><textarea name="notes" rows="2">${escHtml(emp.notes || '')}</textarea></div>
+      <div class="modal-actions">
+        <button type="submit" class="btn btn-primary">حفظ</button>
+        <button type="button" class="btn btn-outline" id="cancel-btn">إلغاء</button>
+      </div>
+    </form>
+  `, function (el) {
+    el.querySelector('#cancel-btn').addEventListener('click', function () { overlay.remove(); });
+    el.querySelector('#hr-emp-form').addEventListener('submit', function (e) {
+      e.preventDefault();
+      const fd = new FormData(e.target);
+      const payload = { name: fd.get('name'), jobTitle: fd.get('jobTitle'), phone: fd.get('phone'), baseSalary: fd.get('baseSalary'), hireDate: fd.get('hireDate'), notes: fd.get('notes') };
+      if (isEdit) { payload.id = emp.id; payload.active = fd.get('active'); }
+      saveInBackground(overlay, async function () {
+        await apiWrite(isEdit ? 'updateEmployee' : 'addEmployee', payload);
+      }, { successMsg: isEdit ? 'تم تعديل الموظف' : 'تمت إضافة الموظف', onDone: hrReload });
+    });
+  });
+}
+
+/* ---------- الحضور والغياب ---------- */
+
+function hrAttSummaryHtml(month) {
+  const emps = hrActive();
+  if (!emps.length) return '';
+  return '<h4 style="margin:22px 0 8px">ملخص شهر ' + escHtml(month) + '</h4><div class="table-wrap"><table><thead><tr><th>الموظف</th>' +
+    HR_STATUSES.map(function (s) { return '<th>' + s + '</th>'; }).join('') + '</tr></thead><tbody>' +
+    emps.map(function (e) {
+      const c = hrCalc(e, month).cnt;
+      return '<tr><td>' + escHtml(e.name) + '</td>' + HR_STATUSES.map(function (s) { return '<td>' + c[s] + '</td>'; }).join('') + '</tr>';
+    }).join('') + '</tbody></table></div>';
+}
+
+function drawHrAttendance() {
+  const body = document.getElementById('hr-body');
+  const date = hrCurDate();
+  const emps = hrActive();
+  body.innerHTML = '<div class="toolbar"><div class="field" style="margin:0"><label>اليوم</label><input type="date" id="hr-att-date" value="' + escHtml(date) + '" style="' + HR_INP + '" /></div></div>' +
+    '<div class="stat-label" style="margin-bottom:8px">اختار حالة كل موظف وهتتسجل فورًا. الملاحظة بتتحفظ بعد ما تختار الحالة.</div>' +
+    '<div class="table-wrap"><table><thead><tr><th>الموظف</th><th>الحالة</th><th>ملاحظة</th></tr></thead><tbody>' +
+    (emps.map(function (e) {
+      const rec = hrAttRec(e.id, date);
+      return '<tr data-att-row="' + escHtml(e.id) + '"><td><strong>' + escHtml(e.name) + '</strong></td>' +
+        '<td><select data-att-status style="' + HR_INP + '"><option value="">— لسه ما اتسجلش —</option>' +
+        HR_STATUSES.map(function (s) { return '<option value="' + s + '"' + (rec && rec.status === s ? ' selected' : '') + '>' + s + '</option>'; }).join('') + '</select></td>' +
+        '<td><input type="text" data-att-notes value="' + escHtml(rec ? rec.notes || '' : '') + '" placeholder="اختياري" style="width:100%;' + HR_INP + '" /></td></tr>';
+    }).join('') || '<tr><td colspan="3" class="empty-state">ضيف موظفين الأول من تبويب "الموظفين"</td></tr>') +
+    '</tbody></table></div><div id="hr-att-summary">' + hrAttSummaryHtml(date.substring(0, 7)) + '</div>';
+
+  document.getElementById('hr-att-date').addEventListener('change', function (e) {
+    if (e.target.value) { hrAttDate = e.target.value; drawHrAttendance(); }
+  });
+  body.querySelectorAll('[data-att-row]').forEach(function (tr) {
+    const id = tr.getAttribute('data-att-row');
+    const sel = tr.querySelector('[data-att-status]');
+    const nt = tr.querySelector('[data-att-notes]');
+    async function save() {
+      const d = hrCurDate();
+      sel.disabled = true;
+      try {
+        await apiWrite('setAttendance', { employeeId: id, date: d, status: sel.value, notes: nt.value });
+        hrAttApply(id, d, sel.value, nt.value);
+        toast(sel.value ? (hrEmp(id) || {}).name + ' — ' + sel.value : 'اتمسح التسجيل', 'success');
+        document.getElementById('hr-att-summary').innerHTML = hrAttSummaryHtml(d.substring(0, 7));
+      } catch (err) {
+        toast(err.message, 'error');
+        drawHrAttendance();
+        return;
+      }
+      sel.disabled = false;
+    }
+    sel.addEventListener('change', save);
+    nt.addEventListener('change', function () { if (sel.value) save(); });
+  });
+}
+
+/* ---------- المرتبات ---------- */
+
+function hrCalc(emp, month) {
+  const base = num(emp.baseSalary);
+  const day = base / HR_MONTH_DAYS;
+  const cnt = { 'حاضر': 0, 'غائب': 0, 'متأخر': 0, 'إجازة': 0 };
+  HR.att.forEach(function (a) {
+    if (String(a.employeeId) === String(emp.id) && hrD(a).substring(0, 7) === month && cnt[a.status] !== undefined) cnt[a.status]++;
+  });
+  const adj = HR.adj.filter(function (a) { return String(a.employeeId) === String(emp.id) && hrD(a).substring(0, 7) === month; });
+  const sumType = function (t) { return adj.filter(function (a) { return a.type === t; }).reduce(function (s, a) { return s + num(a.amount); }, 0); };
+  const absentDed = Math.round(cnt['غائب'] * day * 100) / 100;
+  const ded = sumType('خصم'), adv = sumType('سلفة'), bonus = sumType('مكافأة');
+  const net = Math.round((base - absentDed - ded - adv + bonus) * 100) / 100;
+  return { base: base, day: day, cnt: cnt, adj: adj, absentDed: absentDed, ded: ded, adv: adv, bonus: bonus, net: net };
+}
+
+function drawHrPayroll() {
+  const body = document.getElementById('hr-body');
+  const month = hrCurMonth();
+  const rows = hrActive().map(function (e) { return { e: e, c: hrCalc(e, month) }; });
+  const T = { base: 0, absent: 0, absentDed: 0, ded: 0, adv: 0, bonus: 0, net: 0 };
+  rows.forEach(function (r) {
+    T.base += r.c.base; T.absent += r.c.cnt['غائب']; T.absentDed += r.c.absentDed;
+    T.ded += r.c.ded; T.adv += r.c.adv; T.bonus += r.c.bonus; T.net += r.c.net;
+  });
+  body.innerHTML = '<div class="section-header"><div class="toolbar"><div class="field" style="margin:0"><label>الشهر</label>' +
+    '<input type="month" id="hr-month" value="' + escHtml(month) + '" style="' + HR_INP + '" /></div></div>' +
+    '<button class="btn btn-primary" id="hr-add-adj">+ خصم / مكافأة / سلفة</button></div>' +
+    '<div class="stat-label" style="margin-bottom:8px">خصم الغياب = أيام الغياب × (المرتب الأساسي ÷ 30). المتأخر والإجازة مفيهمش خصم تلقائي، لو عايز تخصم عنهم سجّل خصم يدوي.</div>' +
+    '<div class="table-wrap"><table><thead><tr><th>الموظف</th><th>الأساسي</th><th>أيام الغياب</th><th>خصم الغياب</th><th>خصومات</th><th>سلف</th><th>مكافآت</th><th>الصافي</th><th></th></tr></thead><tbody>' +
+    (rows.map(function (r) {
+      return '<tr><td><strong>' + escHtml(r.e.name) + '</strong></td><td>' + hrMoney(r.c.base) + '</td><td>' + r.c.cnt['غائب'] + '</td>' +
+        '<td>' + hrMoney(r.c.absentDed) + '</td><td>' + hrMoney(r.c.ded) + '</td><td>' + hrMoney(r.c.adv) + '</td><td>' + hrMoney(r.c.bonus) + '</td>' +
+        '<td><strong>' + hrMoney(r.c.net) + '</strong></td><td><button class="link-btn" data-hr-detail="' + escHtml(r.e.id) + '">تفاصيل</button></td></tr>';
+    }).join('') || '<tr><td colspan="9" class="empty-state">ضيف موظفين الأول من تبويب "الموظفين"</td></tr>') +
+    '</tbody>' + (rows.length > 1 ? '<tfoot><tr style="font-weight:800;background:rgba(255,255,255,.04)"><td>المجموع</td><td>' + hrMoney(T.base) + '</td><td>' + T.absent + '</td><td>' + hrMoney(T.absentDed) + '</td><td>' + hrMoney(T.ded) + '</td><td>' + hrMoney(T.adv) + '</td><td>' + hrMoney(T.bonus) + '</td><td>' + hrMoney(T.net) + '</td><td></td></tr></tfoot>' : '') +
+    '</table></div>';
+  document.getElementById('hr-month').addEventListener('change', function (e) {
+    if (e.target.value) { hrMonth = e.target.value; drawHrPayroll(); }
+  });
+  document.getElementById('hr-add-adj').addEventListener('click', function () { openHrAdjForm(''); });
+  body.querySelectorAll('[data-hr-detail]').forEach(function (b) {
+    b.addEventListener('click', function () { openHrDetail(b.getAttribute('data-hr-detail')); });
+  });
+}
+
+function openHrAdjForm(presetEmpId) {
+  const emps = hrActive();
+  if (!emps.length) { toast('ضيف موظفين الأول', 'error'); return; }
+  const month = hrCurMonth();
+  const today = localNowStr().substring(0, 10);
+  const defDate = today.substring(0, 7) === month ? today : month + '-01';
+  const overlay = openModal('خصم / مكافأة / سلفة', `
+    <form id="hr-adj-form">
+      <div class="field"><label>الموظف</label><select name="employeeId" required>
+        ${emps.map(function (e) { return '<option value="' + escHtml(e.id) + '"' + (String(e.id) === String(presetEmpId) ? ' selected' : '') + '>' + escHtml(e.name) + '</option>'; }).join('')}
+      </select></div>
+      <div class="field"><label>النوع</label><select name="type" required>
+        <option value="خصم">خصم</option><option value="مكافأة">مكافأة</option><option value="سلفة">سلفة (تتخصم من المرتب)</option>
+      </select></div>
+      <div class="grid grid-2">
+        <div class="field"><label>المبلغ (ج.م)</label><input type="number" name="amount" min="0.01" step="any" required /></div>
+        <div class="field"><label>التاريخ</label><input type="date" name="date" value="${defDate}" required /></div>
+      </div>
+      <div class="field"><label>السبب (اختياري)</label><input name="reason" placeholder="مثال: تأخير متكرر، مكافأة شغل ممتاز" /></div>
+      <div class="modal-actions">
+        <button type="submit" class="btn btn-primary">حفظ</button>
+        <button type="button" class="btn btn-outline" id="cancel-btn">إلغاء</button>
+      </div>
+    </form>
+  `, function (el) {
+    el.querySelector('#cancel-btn').addEventListener('click', function () { overlay.remove(); });
+    el.querySelector('#hr-adj-form').addEventListener('submit', function (e) {
+      e.preventDefault();
+      const fd = new FormData(e.target);
+      const d = String(fd.get('date'));
+      saveInBackground(overlay, async function () {
+        await apiWrite('addAdjustment', { employeeId: fd.get('employeeId'), type: fd.get('type'), amount: fd.get('amount'), date: d, reason: fd.get('reason') });
+      }, { successMsg: 'تم التسجيل', onDone: function () { hrMonth = d.substring(0, 7); hrTab = 'payroll'; hrReload(); } });
+    });
+  });
+}
+
+function hrSlipHtml(emp, month, c, withDel) {
+  const line = function (l, v) {
+    return '<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid #8884"><span>' + l + '</span><strong>' + v + '</strong></div>';
+  };
+  const adj = c.adj.slice().sort(function (a, b) { return hrD(a).localeCompare(hrD(b)); });
+  return '<h4 style="margin:0 0 8px">' + escHtml(emp.name) + (emp.jobTitle ? ' — ' + escHtml(emp.jobTitle) : '') +
+    ' <span style="font-weight:400;opacity:.7">(شهر ' + escHtml(month) + ')</span></h4>' +
+    line('المرتب الأساسي', hrMoney(c.base)) +
+    line('أيام: حضور / غياب / تأخير / إجازة', c.cnt['حاضر'] + ' / ' + c.cnt['غائب'] + ' / ' + c.cnt['متأخر'] + ' / ' + c.cnt['إجازة']) +
+    line('خصم الغياب (' + c.cnt['غائب'] + ' يوم × ' + hrMoney(c.day) + ')', '- ' + hrMoney(c.absentDed)) +
+    line('خصومات أخرى', '- ' + hrMoney(c.ded)) +
+    line('سلف', '- ' + hrMoney(c.adv)) +
+    line('مكافآت', '+ ' + hrMoney(c.bonus)) +
+    '<div style="display:flex;justify-content:space-between;padding:10px 0;font-size:17px"><span>صافي المرتب</span><strong>' + hrMoney(c.net) + '</strong></div>' +
+    (adj.length ? '<h4 style="margin:14px 0 6px">تفاصيل الخصومات والمكافآت والسلف</h4><div class="table-wrap"><table><thead><tr><th>التاريخ</th><th>النوع</th><th>المبلغ</th><th>السبب</th>' + (withDel ? '<th></th>' : '') + '</tr></thead><tbody>' +
+      adj.map(function (a) {
+        return '<tr><td>' + escHtml(hrD(a)) + '</td><td>' + escHtml(a.type) + '</td><td>' + hrMoney(a.amount) + '</td><td>' + escHtml(a.reason || '-') + '</td>' +
+          (withDel ? '<td><button class="link-btn" data-hr-del="' + escHtml(a.id) + '">حذف</button></td>' : '') + '</tr>';
+      }).join('') + '</tbody></table></div>' : '');
+}
+
+function openHrDetail(empId) {
+  const emp = hrEmp(empId);
+  if (!emp) return;
+  const month = hrCurMonth();
+  const c = hrCalc(emp, month);
+  const overlay = openModal('تفاصيل المرتب', hrSlipHtml(emp, month, c, true) + `
+    <div class="modal-actions" style="align-items:center">
+      <button type="button" class="btn btn-primary" id="hr-slip-add">+ خصم / مكافأة</button>
+      <button type="button" class="link-btn" id="hr-slip-print">🖨️ طباعة</button>
+      <button type="button" class="btn btn-outline" id="hr-slip-close" style="margin-right:auto">إغلاق</button>
+    </div>`, function (el) {
+    el.querySelector('#hr-slip-close').addEventListener('click', function () { overlay.remove(); });
+    el.querySelector('#hr-slip-add').addEventListener('click', function () { overlay.remove(); openHrAdjForm(emp.id); });
+    el.querySelector('#hr-slip-print').addEventListener('click', function () {
+      printHtmlDoc('كشف مرتب ' + emp.name,
+        '<div class="head"><div><h2>' + escHtml(SHOP_NAME) + '</h2><div>كشف مرتب شهر ' + escHtml(month) + '</div></div><div>' + new Date().toLocaleDateString('en-GB') + '</div></div>' + hrSlipHtml(emp, month, c, false));
+    });
+    el.querySelectorAll('[data-hr-del]').forEach(function (b) {
+      b.addEventListener('click', async function () {
+        if (!confirm('تحذف السجل ده؟')) return;
+        try {
+          await apiWrite('deleteAdjustment', { id: b.getAttribute('data-hr-del') });
+          overlay.remove();
+          await hrReload();
+          openHrDetail(empId);
+        } catch (err) { toast(err.message, 'error'); }
+      });
+    });
+  });
+  overlay.querySelector('.modal').style.maxWidth = '620px';
 }
 
 /* ============ الموظفين ============ */

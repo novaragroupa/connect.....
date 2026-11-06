@@ -50,7 +50,10 @@ const SHEETS = {
   RETURNS: 'Returns',
   FAILED: 'FailedOps',
   DEBTS: 'Debts',
-  DEBT_PAYMENTS: 'DebtPayments'
+  DEBT_PAYMENTS: 'DebtPayments',
+  EMPLOYEES: 'Employees',
+  ATTENDANCE: 'Attendance',
+  ADJUSTMENTS: 'Adjustments'
 };
 
 const SCHEMAS = {
@@ -72,11 +75,14 @@ const SCHEMAS = {
     'quantity', 'wholesalePrice', 'profitPrice', 'refundAmount', 'restock', 'reason', 'employee'],
   FailedOps: ['id', 'date', 'action', 'error', 'payload'],
   Debts: ['id', 'date', 'customerName', 'customerPhone', 'total', 'paid', 'remaining', 'dueDate', 'items', 'notes', 'employee', 'status'],
-  DebtPayments: ['id', 'debtId', 'date', 'amount', 'employee']
+  DebtPayments: ['id', 'debtId', 'date', 'amount', 'employee'],
+  Employees: ['id', 'name', 'phone', 'jobTitle', 'baseSalary', 'hireDate', 'active', 'notes', 'createdAt'],
+  Attendance: ['id', 'employeeId', 'employeeName', 'date', 'status', 'notes'],
+  Adjustments: ['id', 'employeeId', 'employeeName', 'date', 'type', 'amount', 'reason']
 };
 
 // أعمدة لازم ترجع دايمًا نص (الباركود والتليفون بيبدأوا بأصفار، والشيت كان بيحوّلهم لأرقام ويشيل الصفر)
-const TEXT_COLS_ = { code: 1, customerPhone: 1, dueDate: 1 };
+const TEXT_COLS_ = { code: 1, customerPhone: 1, dueDate: 1, phone: 1, hireDate: 1 };
 
 const ROLE_ADMIN = 'مدير النظام';
 const ROLE_ACCOUNTS = 'حسابات';
@@ -376,7 +382,11 @@ const BATCH_ALLOWED = {
   updateAccessoryItem: 1, updateDevice: 1, addReturn: 1, addDebt: 1, payDebt: 1
 };
 const PUBLIC_ACTIONS = { ping: 1, login: 1 };
-const ADMIN_ACTIONS = { addUser: 1, listUsers: 1 };
+const ADMIN_ACTIONS = {
+  addUser: 1, listUsers: 1,
+  listEmployees: 1, addEmployee: 1, updateEmployee: 1, listAttendance: 1, setAttendance: 1,
+  listAdjustments: 1, addAdjustment: 1, deleteAdjustment: 1
+};
 // صلاحية الحسابات: بتبيع وتسجّل عادي، بس مينفعش تضيف أو تعدّل أصناف/أجهزة (لأنها مبتشوفش الجملة والمكسب)
 const ACCOUNTS_BLOCKED = { addAccessoryItem: 1, updateAccessoryItem: 1, addDevice: 1, updateDevice: 1, moveAccessoryCategory: 1 };
 
@@ -404,7 +414,7 @@ function doPost(e) {
     }
 
     // قفل: عشان لو جهازين رفعوا في نفس اللحظة العمليات متتداخلش وتبوّظ المخزون
-    if (action === 'batch' || /^(add|sell|update|move)/.test(action)) {
+    if (action === 'batch' || /^(add|sell|update|move|set|delete)/.test(action)) {
       lock = LockService.getScriptLock();
       try { lock.waitLock(30000); }
       catch (le) { lock = null; return jsonOut_({ ok: false, busy: true, error: 'السيرفر مشغول دلوقتي، هنحاول تاني تلقائي' }); }
@@ -465,6 +475,15 @@ function dispatch_(action, body) {
     case 'addDebt': return addDebt_(body);
     case 'payDebt': return payDebt_(body);
     case 'listDebts': return { items: sheetToObjects_(getSheet_(SHEETS.DEBTS)) };
+
+    case 'listEmployees': return { items: sheetToObjects_(getSheet_(SHEETS.EMPLOYEES)) };
+    case 'addEmployee': return addEmployee_(body);
+    case 'updateEmployee': return updateEmployee_(body);
+    case 'listAttendance': return { items: sheetToObjects_(getSheet_(SHEETS.ATTENDANCE)) };
+    case 'setAttendance': return setAttendance_(body);
+    case 'listAdjustments': return { items: sheetToObjects_(getSheet_(SHEETS.ADJUSTMENTS)) };
+    case 'addAdjustment': return addAdjustment_(body);
+    case 'deleteAdjustment': return deleteAdjustment_(body);
 
     default: return { error: 'إجراء غير معروف: ' + action };
   }
@@ -1013,6 +1032,109 @@ function payDebt_(body) {
   });
   updateFields_(sh, SCHEMAS.Debts, d.id, fields);
   return { item: Object.assign({}, d, fields) };
+}
+
+/* ============ الموظفين: بيانات وحضور وخصومات ومكافآت (مدير النظام فقط) ============ */
+
+function ymdIn_(v, label) {
+  const s = v === undefined || v === null ? '' : String(v).trim().substring(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) fail_(label + ' غير صحيح');
+  return s;
+}
+
+function deleteRowById_(sh, id) {
+  const f = findById_(sh, id);
+  if (!f) return false;
+  sh.deleteRow(f.row);
+  invalidate_(sh);
+  return true;
+}
+
+function addEmployee_(body) {
+  const sh = getSheet_(SHEETS.EMPLOYEES);
+  const name = strIn_(body.name, 'اسم الموظف', { required: true, max: 100 });
+  const dup = sheetToObjects_(sh).some(function (e) {
+    return String(e.name).trim().toLowerCase() === name.toLowerCase() && e.active !== 'لا';
+  });
+  if (dup) return { error: 'فيه موظف بنفس الاسم' };
+  const obj = {
+    id: Utilities.getUuid(),
+    name: name,
+    phone: strIn_(body.phone, 'رقم الموظف', { max: 40 }),
+    jobTitle: strIn_(body.jobTitle, 'الوظيفة', { max: 100 }),
+    baseSalary: numIn_(body.baseSalary, 'المرتب الأساسي', { def: 0, min: 0 }),
+    hireDate: body.hireDate ? ymdIn_(body.hireDate, 'تاريخ التعيين') : '',
+    active: 'نعم',
+    notes: strIn_(body.notes, 'الملاحظات', { max: 1000 }),
+    createdAt: nowStr_()
+  };
+  appendObject_(sh, SCHEMAS.Employees, obj);
+  return { item: obj };
+}
+
+function updateEmployee_(body) {
+  const sh = getSheet_(SHEETS.EMPLOYEES);
+  const f = findById_(sh, body.id);
+  if (!f) return { error: 'الموظف غير موجود' };
+  const e = f.obj;
+  const fields = {
+    name: strIn_(body.name !== undefined ? body.name : e.name, 'اسم الموظف', { required: true, max: 100 }),
+    phone: strIn_(body.phone !== undefined ? body.phone : e.phone, 'رقم الموظف', { max: 40 }),
+    jobTitle: strIn_(body.jobTitle !== undefined ? body.jobTitle : e.jobTitle, 'الوظيفة', { max: 100 }),
+    baseSalary: body.baseSalary !== undefined ? numIn_(body.baseSalary, 'المرتب الأساسي', { min: 0 }) : Number(e.baseSalary) || 0,
+    hireDate: body.hireDate !== undefined ? (body.hireDate ? ymdIn_(body.hireDate, 'تاريخ التعيين') : '') : String(e.hireDate || ''),
+    notes: strIn_(body.notes !== undefined ? body.notes : e.notes, 'الملاحظات', { max: 1000 }),
+    active: body.active === 'لا' ? 'لا' : (body.active === 'نعم' ? 'نعم' : (e.active || 'نعم'))
+  };
+  updateFields_(sh, SCHEMAS.Employees, e.id, fields);
+  return { item: Object.assign({}, e, fields) };
+}
+
+// تسجيل حضور/غياب ليوم واحد: لو فيه تسجيل قديم لنفس الموظف ونفس اليوم بيتعدّل، ولو الحالة فاضية بيتمسح
+function setAttendance_(body) {
+  const emp = findObjById_(getSheet_(SHEETS.EMPLOYEES), body.employeeId);
+  if (!emp) return { error: 'الموظف غير موجود' };
+  const date = ymdIn_(body.date, 'التاريخ');
+  const sh = getSheet_(SHEETS.ATTENDANCE);
+  const ex = sheetToObjects_(sh).filter(function (a) {
+    return String(a.employeeId) === String(emp.id) && String(a.date).substring(0, 10) === date;
+  })[0];
+  const status = body.status === undefined || body.status === null ? '' : String(body.status);
+  if (!status) {
+    if (ex) deleteRowById_(sh, ex.id);
+    return { deleted: true };
+  }
+  oneOf_(status, ['حاضر', 'غائب', 'متأخر', 'إجازة'], 'الحالة');
+  const notes = strIn_(body.notes, 'الملاحظة', { max: 500 });
+  if (ex) {
+    const fields = { status: status, notes: notes, employeeName: emp.name };
+    updateFields_(sh, SCHEMAS.Attendance, ex.id, fields);
+    return { item: Object.assign({}, ex, fields) };
+  }
+  const obj = { id: Utilities.getUuid(), employeeId: emp.id, employeeName: emp.name, date: date, status: status, notes: notes };
+  appendObject_(sh, SCHEMAS.Attendance, obj);
+  return { item: obj };
+}
+
+function addAdjustment_(body) {
+  const emp = findObjById_(getSheet_(SHEETS.EMPLOYEES), body.employeeId);
+  if (!emp) return { error: 'الموظف غير موجود' };
+  const obj = {
+    id: Utilities.getUuid(),
+    employeeId: emp.id,
+    employeeName: emp.name,
+    date: body.date ? ymdIn_(body.date, 'التاريخ') : nowStr_().substring(0, 10),
+    type: oneOf_(body.type, ['خصم', 'مكافأة', 'سلفة'], 'النوع'),
+    amount: numIn_(body.amount, 'المبلغ', { gt: 0 }),
+    reason: strIn_(body.reason, 'السبب', { max: 500 })
+  };
+  appendObject_(getSheet_(SHEETS.ADJUSTMENTS), SCHEMAS.Adjustments, obj);
+  return { item: obj };
+}
+
+function deleteAdjustment_(body) {
+  if (!deleteRowById_(getSheet_(SHEETS.ADJUSTMENTS), body.id)) return { error: 'السجل غير موجود' };
+  return { deleted: true };
 }
 
 /* ============ البحث بالكود / البيع بالباركود ============ */
