@@ -929,6 +929,16 @@ function openMaintenanceForm() {
         <div class="field"><label>التكلفة (سعر الجملة)</label><input type="number" name="wholesaleCost" value="0" required /></div>
         <div class="field"><label>تكلفة المكسب</label><input type="number" name="profitCost" value="0" required /></div>
       </div>
+      <div class="field"><label>طريقة الدفع</label>
+        <select name="payMode">
+          <option value="full">دفع كامل</option>
+          <option value="credit">آجل (يدفع جزء والباقي عند الاستلام)</option>
+        </select>
+      </div>
+      <div id="maint-credit-box" class="hidden">
+        <div class="field"><label>المدفوع دلوقتي (ج.م)</label><input type="number" name="paid" min="0" step="any" value="0" /></div>
+        <div class="field"><label>ميعاد سداد الباقي</label><input type="date" name="dueDate" /></div>
+      </div>
       <div class="field"><label>ملاحظات (اختياري)</label><textarea name="notes" rows="3" placeholder="أي تفاصيل إضافية عن الصيانة..."></textarea></div>
       <div class="modal-actions">
         <button type="submit" class="btn btn-primary">حفظ</button>
@@ -941,15 +951,27 @@ function openMaintenanceForm() {
     function toggleFields() {
       const known = caseSelect.value === 'عطل معروف';
       el.querySelector('#fault-field').classList.toggle('hidden', !known);
-      el.querySelector('#phone-field').classList.toggle('hidden', !known);
+      const credit = el.querySelector('[name=payMode]').value === 'credit';
+      el.querySelector('#phone-field').classList.toggle('hidden', !known && !credit);
+      el.querySelector('#maint-credit-box').classList.toggle('hidden', !credit);
     }
     caseSelect.addEventListener('change', toggleFields);
+    el.querySelector('[name=payMode]').addEventListener('change', toggleFields);
     toggleFields();
     el.querySelector('#cancel-btn').addEventListener('click', function () { overlay.remove(); });
     el.querySelector('#maint-form').addEventListener('submit', function (e) {
       e.preventDefault();
       const fd = new FormData(e.target);
       const tabAtSubmit = maintenanceTab;
+      const mTotal = (Number(fd.get('wholesaleCost')) || 0) + (Number(fd.get('profitCost')) || 0);
+      const mCredit = fd.get('payMode') === 'credit';
+      const mPaid = Math.max(0, Number(fd.get('paid')) || 0);
+      const mDue = String(fd.get('dueDate') || '');
+      if (mCredit) {
+        if (!String(fd.get('customerName') || '').trim() || !String(fd.get('customerPhone') || '').trim()) { toast('الآجل محتاج اسم العميل ورقمه', 'error'); return; }
+        if (mPaid >= mTotal) { toast('المدفوع لازم يكون أقل من الإجمالي، أو اختار "دفع كامل"', 'error'); return; }
+        if (!mDue) { toast('حدد ميعاد سداد الباقي', 'error'); return; }
+      }
       saveInBackground(overlay, async function () {
         const result = await apiWrite('addMaintenance', {
           deviceCategory: tabAtSubmit,
@@ -965,6 +987,20 @@ function openMaintenanceForm() {
         });
         invalidateCache('accountingSummary');
         patchCacheAdd('listMaintenance', result.item);
+        // الدفع الجزئي: بيتسجل في الآجل، وبعدين تسدده من صفحة "الآجل" لما العميل يجي يستلم
+        if (mCredit) {
+          try {
+            await apiWrite('addDebt', {
+              customerName: result.item.customerName, customerPhone: result.item.customerPhone,
+              total: Number(result.item.total), paid: mPaid, dueDate: mDue,
+              items: 'صيانة — ' + (result.item.deviceType || '') + (result.item.faultType ? ' — ' + result.item.faultType : ''),
+              notes: '', employee: CURRENT_USER.name
+            });
+            result.debt = { paid: mPaid, remaining: Math.round((Number(result.item.total) - mPaid) * 100) / 100, dueDate: mDue };
+          } catch (err) {
+            toast('اتسجلت الصيانة بس فشل تسجيل الآجل: ' + err.message + ' — سجّله يدويًا', 'error');
+          }
+        }
         return result;
       }, {
         successMsg: 'تمت إضافة عملية الصيانة',
@@ -973,7 +1009,7 @@ function openMaintenanceForm() {
             customerName: result.item.customerName, customerPhone: result.item.customerPhone,
             productName: (result.item.deviceType || '') + ' (صيانة ' + tabAtSubmit + ')',
             faultType: result.item.faultType || result.item.caseType || 'صيانة',
-            employee: result.item.employee, total: result.item.total
+            employee: result.item.employee, total: result.item.total, debt: result.debt || null
           });
           loadMaintenanceTable();
         }
