@@ -1,7 +1,7 @@
 /* Service Worker — بيخلي الموقع يفتح من غير إنترنت.
    لو غيّرت أي ملف من ملفات الواجهة، النسخة الجديدة بتتحمل أوتوماتيك لما النت يكون شغال. */
 
-const CACHE = 'connect-shell-v3';
+const CACHE = 'connect-shell-v4';
 const SHELL = ['./', 'index.html', 'style.css', 'app.js', 'offline.js', 'config.js', 'manifest.json', 'logo-icon.webp', 'favicon.png'];
 
 self.addEventListener('install', function (e) {

@@ -3068,9 +3068,9 @@ function printReceipt(data) {
     return '<div class="row"><span class="l">' + label + '</span><span class="v">' + escHtml(value || '-') + '</span></div>';
   };
   const html = '<!DOCTYPE html><html dir="rtl"><head><meta charset="utf-8"><title>إيصال</title><style>' +
-    '@page { size: ' + width + 'mm auto; margin: 0; }' +
+    '@page { size: ' + width + 'mm 297mm; margin: 0; }' +
     '* { box-sizing: border-box; }' +
-    'html, body { margin: 0; padding: 0; background: #fff; color: #000; }' +
+    'html, body { margin: 0; padding: 0; background: #fff; color: #000; overflow: hidden; }' +
     'body { width: 100%; max-width: ' + width + 'mm; margin: 0 auto; padding: 3mm 3mm 6mm; font-family: Tahoma, "Segoe UI", Arial, sans-serif; font-size: 12px; line-height: 1.55; }' +
     '.center { text-align: center; }' +
     '.logo { display: block; margin: 0 auto 4px; width: ' + (width <= 58 ? 16 : 22) + 'mm; height: auto; filter: grayscale(1) contrast(1.3); }' +
@@ -3105,7 +3105,7 @@ function printReceipt(data) {
 
   // بنطبع من iframe مخفي بدل نافذة جديدة، عشان المتصفح ميحجبش النافذة وتشتغل حتى بعد عمليات أوفلاين
   const frame = document.createElement('iframe');
-  frame.style.cssText = 'position:fixed;right:0;bottom:0;width:0;height:0;border:0;visibility:hidden';
+  frame.style.cssText = 'position:fixed;left:-10000px;top:0;width:' + width + 'mm;height:1200px;border:0;background:#fff';
   document.body.appendChild(frame);
   const doc = frame.contentWindow.document;
   doc.open(); doc.write(html); doc.close();
@@ -3114,6 +3114,14 @@ function printReceipt(data) {
   function doPrint() {
     if (printed) return;
     printed = true;
+    // الطابعات الحرارية بتتلغبط مع "auto"، فبنقيس طول الإيصال الفعلي ونثبّته كارتفاع صفحة
+    try {
+      const h = Math.max(doc.documentElement.scrollHeight, doc.body.scrollHeight);
+      const mm = Math.min(Math.max(Math.ceil(h * 25.4 / 96) + 8, 60), 1000);
+      const st = doc.createElement('style');
+      st.textContent = '@page { size: ' + width + 'mm ' + mm + 'mm; margin: 0; }';
+      doc.head.appendChild(st);
+    } catch (e) { /* نكمل بالارتفاع الافتراضي */ }
     try { frame.contentWindow.focus(); frame.contentWindow.print(); } catch (e) { toast('تعذرت الطباعة: ' + e.message, 'error'); }
     setTimeout(function () { frame.remove(); }, 60000);
   }
