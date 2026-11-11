@@ -3062,6 +3062,7 @@ function printReceipt(data) {
   const width = (typeof RECEIPT_WIDTH_MM !== 'undefined' && Number(RECEIPT_WIDTH_MM)) || 80;
   const shopPhone = (typeof SHOP_PHONE !== 'undefined' && SHOP_PHONE) || '';
   const logoUrl = new URL('logo-icon.webp', location.href).href;
+  const showLogo = (typeof RECEIPT_SHOW_LOGO !== 'undefined') ? !!RECEIPT_SHOW_LOGO : false;
   const now = new Date();
   const when = now.toLocaleDateString('en-GB') + '  ' + now.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
   const row = function (label, value) {
@@ -3083,7 +3084,7 @@ function printReceipt(data) {
     '.total { font-size: 16px; font-weight: bold; }' +
     '.item { margin: 4px 0; } .iname { font-weight: bold; }' +
     '</style></head><body>' +
-    '<div class="center"><img class="logo" src="' + escHtml(logoUrl) + '" alt="" /><h2>' + escHtml(SHOP_NAME) + '</h2><div class="muted">' + when + '</div></div><hr />' +
+    '<div class="center">' + (showLogo ? '<img class="logo" src="' + escHtml(logoUrl) + '" alt="" />' : '') + '<h2>' + escHtml(SHOP_NAME) + '</h2><div class="muted">' + when + '</div></div><hr />' +
     row('العميل:', data.customerName) + row('الموظف:', data.employee) + '<hr />' +
     (data.items && data.items.length
       ? data.items.map(function (it) {

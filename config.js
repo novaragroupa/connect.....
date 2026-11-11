@@ -9,3 +9,6 @@ const SHOP_PHONE = "01288838253";
 
 // عرض ورق طابعة الإيصالات بالملي: 80 (Xprinter XP-80) أو 58 (XP-58)
 const RECEIPT_WIDTH_MM = 80;
+
+// لوجو على الإيصال: false = من غير لوجو (أضمن مع الطابعات الحرارية)، true = يطبع اللوجو
+const RECEIPT_SHOW_LOGO = false;
