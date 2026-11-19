@@ -2165,7 +2165,7 @@ async function loadDayRecords(day) {
 
 function dayDetailsHtml(day, d) {
   const costs = !hideCosts(); // المدير (الأدمن) بيشوف الجملة والمكسب، الباقي الإجمالي بس
-  const money = function (n) { return num(n).toLocaleString() + ' ج.م'; };
+  const money = function (n) { return num(n).toLocaleString('en-US') + ' ج.م'; };
   const sections = [
     { id: 'maint', title: '🛠️ صيانة', cash: false },
     { id: 'acc', title: '🎧 إكسسوارات', cash: false },
@@ -2191,7 +2191,7 @@ function dayDetailsHtml(day, d) {
         '<td>' + escHtml(x.name || '-') + (x.sub ? '<div class="muted-sub" style="font-size:11.5px;opacity:.7">' + escHtml(x.sub) + '</div>' : '') + '</td>' +
         '<td>' + escHtml(x.customer || '-') + (x.phone ? '<div class="muted-sub" style="font-size:11.5px;opacity:.7">' + escHtml(x.phone) + '</div>' : '') + '</td>' +
         '<td>' + escHtml(x.employee || '-') + '</td>' +
-        (sec.cash ? '' : '<td>' + x.qty.toLocaleString() + '</td>') +
+        (sec.cash ? '' : '<td>' + x.qty.toLocaleString('en-US') + '</td>') +
         (showCosts ? '<td>' + money(x.wholesale) + '</td><td>' + money(x.profit) + '</td>' : '') +
         '<td><strong>' + money(x.total) + '</strong></td></tr>';
     }).join('');
@@ -2217,7 +2217,7 @@ function printHtmlDoc(title, bodyHtml) {
   const html = '<!DOCTYPE html><html dir="rtl"><head><meta charset="utf-8"><title>' + escHtml(title) + '</title><style>' +
     '@page { size: A4; margin: 10mm; }' +
     '* { box-sizing: border-box; }' +
-    'body { font-family: Tahoma, "Segoe UI", Arial, sans-serif; font-size: 12px; color: #000; background: #fff; margin: 0; }' +
+    'body { font-family: Tahoma, "Segoe UI", Arial, "Noto Sans Arabic", sans-serif; font-size: 12px; color: #000; background: #fff; margin: 0; }' +
     'h2 { margin: 0 0 2px; } h4 { margin: 14px 0 6px; font-size: 14px; }' +
     '.head { display: flex; justify-content: space-between; align-items: flex-end; border-bottom: 2px solid #000; padding-bottom: 6px; margin-bottom: 8px; }' +
     '.grid { display: flex; gap: 8px; margin-bottom: 6px; } .card { border: 1px solid #000; padding: 6px 10px; flex: 1; }' +
@@ -2225,6 +2225,9 @@ function printHtmlDoc(title, bodyHtml) {
     'table { width: 100%; border-collapse: collapse; } th, td { border: 1px solid #555; padding: 4px 6px; text-align: right; vertical-align: top; }' +
     'thead th { background: #eee; } tfoot td { background: #f5f5f5; }' +
     'tr { page-break-inside: avoid; }' +
+    'tr[style*="f0a89f"] { color: #a33 !important; }' +
+    '.muted-sub { opacity: 1 !important; color: #444; }' +
+    '* { -webkit-print-color-adjust: exact; print-color-adjust: exact; }' +
     '</style></head><body>' + bodyHtml + '</body></html>';
   const frame = document.createElement('iframe');
   frame.style.cssText = 'position:fixed;right:0;bottom:0;width:0;height:0;border:0;visibility:hidden';
@@ -2511,7 +2514,7 @@ const HR_INP = 'padding:9px 12px;border-radius:8px;border:1px solid var(--border
 function hrCurMonth() { if (!hrMonth) hrMonth = localNowStr().substring(0, 7); return hrMonth; }
 function hrCurDate() { if (!hrAttDate) hrAttDate = localNowStr().substring(0, 10); return hrAttDate; }
 function hrD(r) { return String(r.date || '').substring(0, 10); }
-function hrMoney(n) { return (Math.round(num(n) * 100) / 100).toLocaleString() + ' ج.م'; }
+function hrMoney(n) { return (Math.round(num(n) * 100) / 100).toLocaleString('en-US') + ' ج.م'; }
 function hrActive() { return HR.emps.filter(function (e) { return e.active !== 'لا'; }); }
 function hrEmp(id) { return HR.emps.filter(function (e) { return String(e.id) === String(id); })[0]; }
 function hrAttRec(empId, date) {
@@ -3063,16 +3066,21 @@ function printReceipt(data) {
   const shopPhone = (typeof SHOP_PHONE !== 'undefined' && SHOP_PHONE) || '';
   const logoUrl = new URL('logo-icon.webp', location.href).href;
   const showLogo = (typeof RECEIPT_SHOW_LOGO !== 'undefined') ? !!RECEIPT_SHOW_LOGO : false;
+  // منطقة الطباعة الفعلية أضيق من الورق: ~72mm على ورق 80 و~48mm على ورق 58
+  const printable = width <= 58 ? 48 : 72;
+  // لو العملية اتسجلت قبل كده (أوفلاين) نطبع وقتها هي، مش وقت الطباعة
+  const m = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})/.exec(String(data.date || ''));
   const now = new Date();
-  const when = now.toLocaleDateString('en-GB') + '  ' + now.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+  const when = m ? (m[3] + '/' + m[2] + '/' + m[1] + '  ' + m[4] + ':' + m[5])
+    : now.toLocaleDateString('en-GB') + '  ' + now.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
   const row = function (label, value) {
     return '<div class="row"><span class="l">' + label + '</span><span class="v">' + escHtml(value || '-') + '</span></div>';
   };
   const html = '<!DOCTYPE html><html dir="rtl"><head><meta charset="utf-8"><title>إيصال</title><style>' +
     '@page { size: ' + width + 'mm 297mm; margin: 0; }' +
     '* { box-sizing: border-box; }' +
-    'html, body { margin: 0; padding: 0; background: #fff; color: #000; overflow: hidden; }' +
-    'body { width: 100%; max-width: ' + width + 'mm; margin: 0 auto; padding: 3mm 3mm 6mm; font-family: Tahoma, "Segoe UI", Arial, sans-serif; font-size: 12px; line-height: 1.55; }' +
+    'html, body { margin: 0; padding: 0; background: #fff; color: #000; }' +
+    'body { width: ' + printable + 'mm; margin: 0 auto; padding: 2mm 0 8mm; font-family: Tahoma, "Segoe UI", Arial, "Noto Sans Arabic", sans-serif; font-size: 12px; line-height: 1.55; }' +
     '.center { text-align: center; }' +
     '.logo { display: block; margin: 0 auto 4px; width: ' + (width <= 58 ? 16 : 22) + 'mm; height: auto; filter: grayscale(1) contrast(1.3); }' +
     'h2 { margin: 0 0 2px; font-size: 20px; }' +
@@ -3085,20 +3093,21 @@ function printReceipt(data) {
     '.item { margin: 4px 0; } .iname { font-weight: bold; }' +
     '</style></head><body>' +
     '<div class="center">' + (showLogo ? '<img class="logo" src="' + escHtml(logoUrl) + '" alt="" />' : '') + '<h2>' + escHtml(SHOP_NAME) + '</h2><div class="muted">' + when + '</div></div><hr />' +
-    row('العميل:', data.customerName) + row('الموظف:', data.employee) + '<hr />' +
+    (data.ref ? row('رقم الفاتورة:', data.ref) : '') +
+    row('العميل:', data.customerName) + (data.customerPhone ? row('الهاتف:', data.customerPhone) : '') + row('الموظف:', data.employee) + '<hr />' +
     (data.items && data.items.length
       ? data.items.map(function (it) {
           return '<div class="item"><div class="iname">' + escHtml(it.name) + '</div>' +
-            '<div class="row"><span class="l">' + it.qty + ' × ' + Number(it.unit).toLocaleString() + '</span><span class="v">' + Number(it.total).toLocaleString() + '</span></div>' +
+            '<div class="row"><span class="l">' + it.qty + ' × ' + Number(it.unit).toLocaleString('en-US') + '</span><span class="v">' + Number(it.total).toLocaleString('en-US') + '</span></div>' +
             (it.warranty ? '<div class="muted">الضمان: ' + escHtml(it.warranty) + '</div>' : '') + '</div>';
         }).join('') + '<hr />'
       : (data.faultType ? row('نوع العطل:', data.faultType) : '') + (data.productName ? row(data.faultType ? 'الجهاز:' : 'المنتج:', data.productName) : '') + '<hr />') +
-    (data.discount > 0 ? row('الإجمالي قبل الخصم:', Number(data.subtotal || 0).toLocaleString() + ' ج.م') + row('الخصم:', '- ' + Number(data.discount).toLocaleString() + ' ج.م') : '') +
-    '<div class=\"row total\"><span class=\"l\">الإجمالي:</span><span class=\"v\">' + Number(data.total || 0).toLocaleString() + ' ج.م</span></div>' +
-    (data.debt ? row('المدفوع:', Number(data.debt.paid).toLocaleString() + ' ج.م') + row('المتبقي (آجل):', Number(data.debt.remaining).toLocaleString() + ' ج.م') + row('ميعاد السداد:', data.debt.dueDate) : '') +
-    (data.payment ? row('المسدد الآن:', Number(data.payment.paid).toLocaleString() + ' ج.م') +
+    (data.discount > 0 ? row('الإجمالي قبل الخصم:', Number(data.subtotal || 0).toLocaleString('en-US') + ' ج.م') + row('الخصم:', '- ' + Number(data.discount).toLocaleString('en-US') + ' ج.م') : '') +
+    '<div class=\"row total\"><span class=\"l\">الإجمالي:</span><span class=\"v\">' + Number(data.total || 0).toLocaleString('en-US') + ' ج.م</span></div>' +
+    (data.debt ? row('المدفوع:', Number(data.debt.paid).toLocaleString('en-US') + ' ج.م') + row('المتبقي (آجل):', Number(data.debt.remaining).toLocaleString('en-US') + ' ج.م') + row('ميعاد السداد:', data.debt.dueDate) : '') +
+    (data.payment ? row('المسدد الآن:', Number(data.payment.paid).toLocaleString('en-US') + ' ج.م') +
       (Number(data.payment.remaining) > 0
-        ? row('المتبقي:', Number(data.payment.remaining).toLocaleString() + ' ج.م') + (data.payment.dueDate ? row('ميعاد السداد:', data.payment.dueDate) : '')
+        ? row('المتبقي:', Number(data.payment.remaining).toLocaleString('en-US') + ' ج.م') + (data.payment.dueDate ? row('ميعاد السداد:', data.payment.dueDate) : '')
         : '<div class="center total">تم السداد بالكامل ✓</div>') : '') + '<hr />' +
     '<div class="center">شكرًا لتعاملكم معنا</div>' +
     (shopPhone ? '<div class="center" style="margin-top:3px">للاستفسار: <b dir="ltr">' + escHtml(shopPhone) + '</b></div>' : '') +
@@ -3106,7 +3115,7 @@ function printReceipt(data) {
 
   // بنطبع من iframe مخفي بدل نافذة جديدة، عشان المتصفح ميحجبش النافذة وتشتغل حتى بعد عمليات أوفلاين
   const frame = document.createElement('iframe');
-  frame.style.cssText = 'position:fixed;left:-10000px;top:0;width:' + width + 'mm;height:1200px;border:0;background:#fff';
+  frame.style.cssText = 'position:fixed;left:-10000px;top:0;width:' + width + 'mm;height:600px;border:0;background:#fff';
   document.body.appendChild(frame);
   const doc = frame.contentWindow.document;
   doc.open(); doc.write(html); doc.close();
@@ -3117,8 +3126,9 @@ function printReceipt(data) {
     printed = true;
     // الطابعات الحرارية بتتلغبط مع "auto"، فبنقيس طول الإيصال الفعلي ونثبّته كارتفاع صفحة
     try {
-      const h = Math.max(doc.documentElement.scrollHeight, doc.body.scrollHeight);
-      const mm = Math.min(Math.max(Math.ceil(h * 25.4 / 96) + 8, 60), 1000);
+      // نقيس طول محتوى الإيصال نفسه (مش الـ viewport، لأن scrollHeight عمره ما بيقل عن ارتفاع الـ iframe)
+      const h = doc.body.getBoundingClientRect().height;
+      const mm = Math.min(Math.max(Math.ceil(h * 25.4 / 96) + 4, 40), 1000);
       const st = doc.createElement('style');
       st.textContent = '@page { size: ' + width + 'mm ' + mm + 'mm; margin: 0; }';
       doc.head.appendChild(st);
