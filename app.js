@@ -890,7 +890,7 @@ async function loadMaintenanceTable() {
       <table>
         <thead><tr>
           <th>التاريخ</th><th>الحالة</th><th>نوع الجهاز</th><th>العطل</th><th>العميل</th><th>الهاتف</th>
-          ${hideCosts() ? '' : '<th>سعر الجملة</th><th>المكسب</th>'}<th>الإجمالي</th><th>ملاحظات</th><th>الموظف</th>
+          ${hideCosts() ? '' : '<th>سعر الجملة</th><th>المكسب</th>'}<th>الإجمالي</th><th>ملاحظات</th><th>الموظف</th><th></th>
         </tr></thead>
         <tbody>
           ${rows.map(function (r) {
@@ -904,6 +904,7 @@ async function loadMaintenanceTable() {
               <td><strong>${Number(r.total).toLocaleString()}</strong></td>
               <td>${escHtml(r.notes || '-')}</td>
               <td>${escHtml(r.employee || '-')}</td>
+              <td>${reprintBtn('listMaintenance', r)}</td>
             </tr>`;
           }).join('')}
         </tbody>
@@ -1692,7 +1693,7 @@ async function loadCashTable() {
     rows.sort(function (a, b) { return String(b.date).localeCompare(String(a.date)); });
     document.getElementById('cash-table').innerHTML = rows.length ? `
       <table>
-        <thead><tr><th>التاريخ</th><th>النوع</th><th>العميل</th><th>الهاتف</th><th>المبلغ</th><th>ملاحظات</th><th>الموظف</th></tr></thead>
+        <thead><tr><th>التاريخ</th><th>النوع</th><th>العميل</th><th>الهاتف</th><th>المبلغ</th><th>ملاحظات</th><th>الموظف</th><th></th></tr></thead>
         <tbody>
           ${rows.map(function (r) {
             return `<tr>
@@ -1701,6 +1702,7 @@ async function loadCashTable() {
               <td>${escHtml(r.customerName)}</td><td>${escHtml(r.customerPhone)}</td>
               <td><strong>${Number(r.amount).toLocaleString()}</strong></td>
               <td>${escHtml(r.notes || '-')}</td><td>${escHtml(r.employee)}</td>
+              <td>${reprintBtn('listCashTransfers', r)}</td>
             </tr>`;
           }).join('')}
         </tbody>
@@ -2310,7 +2312,7 @@ async function renderDebts() {
             '<td>' + Number(d.total).toLocaleString() + '</td><td>' + Number(d.paid).toLocaleString() + '</td>' +
             '<td><strong>' + Number(d.remaining).toLocaleString() + '</strong></td>' +
             '<td' + (late1 ? ' style="color:#e55;font-weight:800"' : '') + '>' + escHtml(isOpen ? (debtDue(d) || '-') : 'مسدد ✓') + (late1 ? ' (متأخر)' : '') + '</td>' +
-            '<td>' + (isOpen && !isViewer() ? '<button class="btn btn-primary btn-sm" data-pay-debt="' + escHtml(d.id) + '">تسديد</button>' : '') + '</td></tr>';
+            '<td style="white-space:nowrap">' + (isOpen && !isViewer() ? '<button class="btn btn-primary btn-sm" data-pay-debt="' + escHtml(d.id) + '">تسديد</button> ' : '') + reprintBtn('listDebts', d) + '</td></tr>';
         }).join('') || '<tr><td colspan="9" class="empty-state">مفيش فواتير آجل هنا</td></tr>'}
       </tbody>
     </table></div>
@@ -2493,6 +2495,7 @@ function gsOpenDetail(t, r) {
   const overlay = openModal(t.label + ' — ' + t.title(r), rows + `
     <div class="modal-actions" style="margin-top:14px">
       ${canGo ? '<button type="button" class="btn btn-primary" id="gs-go">فتح القسم</button>' : ''}
+      ${reprintBtn(t.key, r)}
       <button type="button" class="btn btn-outline" id="gs-close">إغلاق</button>
     </div>`, function (el) {
     el.querySelector('#gs-close').addEventListener('click', function () { overlay.remove(); });
@@ -2992,10 +2995,99 @@ function drawReturnsSales() {
       return '<tr><td>' + escHtml(String(s.date).substring(0, 16)) + '</td><td>' + escHtml(x.name) + '</td><td>' + escHtml(s.customerName || '-') + '<br><small style="color:var(--text-muted)">' + escHtml(s.customerPhone || '') + '</small></td>' +
         '<td>' + s.quantity + (left < s.quantity ? ' <span class="badge badge-danger">اترجع ' + (s.quantity - left) + '</span>' : '') + '</td>' +
         '<td>' + Number(s.totalPrice).toLocaleString() + '</td><td>' + escHtml(warrantyLabel(s)) + '</td>' +
-        '<td>' + (left > 0 ? '<button class="btn btn-primary btn-sm" data-ret="' + i + '">استرجاع</button>' : '<span class="badge badge-slate">اترجع بالكامل</span>') + '</td></tr>';
+        '<td style="white-space:nowrap">' + (left > 0 ? '<button class="btn btn-primary btn-sm" data-ret="' + i + '">استرجاع</button> ' : '<span class="badge badge-slate">اترجع بالكامل</span> ') +
+        '<button class="btn btn-outline btn-sm" data-reprint="' + i + '">🖨️ طباعة</button></td></tr>';
     }).join('') + '</tbody></table></div>';
   box.querySelectorAll('[data-ret]').forEach(function (b) {
     b.addEventListener('click', function () { openReturnForm(found[Number(b.getAttribute('data-ret'))]); });
+  });
+  // إعادة طباعة الإيصال: متاحة لأي حد فاتح السيستم (بما فيهم المدير والمحاسب)
+  box.querySelectorAll('[data-reprint]').forEach(function (b) {
+    b.addEventListener('click', function () { reprintSale(found[Number(b.getAttribute('data-reprint'))]); });
+  });
+}
+
+/* ---------- إعادة طباعة أي عملية (متاحة لكل الأدوار) ---------- */
+
+const PRINTABLE_LISTS = { listMaintenance: 1, listAccessorySales: 1, listDeviceSales: 1, listCashTransfers: 1, listDebts: 1, listReturns: 1 };
+
+function reprintBtn(listKey, r) {
+  if (!PRINTABLE_LISTS[listKey] || !r || r.id === undefined) return '';
+  return '<button type="button" class="btn btn-outline btn-sm" data-reprint-op="' + listKey + '|' + escHtml(r.id) + '">🖨️ طباعة</button>';
+}
+
+function reprintOperation(key, r) {
+  const ref = String(r.id || '').slice(-6).toUpperCase();
+  switch (key) {
+    case 'listAccessorySales': return reprintSale({ type: 'accessory', sale: r, name: r.itemName });
+    case 'listDeviceSales': return reprintSale({ type: 'device', sale: r, name: r.deviceName });
+    case 'listMaintenance':
+      return printReceipt({
+        customerName: r.customerName, customerPhone: r.customerPhone,
+        productName: (r.deviceType || '') + ' (صيانة ' + (r.deviceCategory || '') + ')',
+        faultType: r.faultType || r.caseType || 'صيانة', employee: r.employee, total: r.total, date: r.date, ref: ref
+      });
+    case 'listCashTransfers':
+      return printReceipt({
+        customerName: r.customerName, customerPhone: r.customerPhone,
+        productName: 'تحويل كاش — ' + (r.type === 'سحب' ? 'سحب' : 'إيداع'),
+        employee: r.employee, total: r.amount, date: r.date, ref: ref
+      });
+    case 'listDebts':
+      return printReceipt({
+        customerName: r.customerName, customerPhone: r.customerPhone,
+        productName: 'فاتورة آجل' + (r.items ? ' — ' + r.items : ''), employee: r.employee,
+        total: r.total, date: r.date, ref: ref,
+        debt: { paid: Number(r.paid) || 0, remaining: Number(r.remaining) || 0, dueDate: r.status === 'مسدد' ? 'مسدد ✓' : debtDue(r) }
+      });
+    case 'listReturns':
+      return printReceipt({
+        customerName: r.customerName, customerPhone: r.customerPhone,
+        productName: 'مرتجع — ' + (r.itemName || '') + ' ×' + (Number(r.quantity) || 1),
+        employee: r.employee, total: r.refundAmount, totalLabel: 'المبلغ المرجّع:', date: r.date, ref: ref
+      });
+  }
+}
+
+document.addEventListener('click', function (e) {
+  const b = e.target.closest ? e.target.closest('[data-reprint-op]') : null;
+  if (!b) return;
+  const v = b.getAttribute('data-reprint-op'), i = v.indexOf('|');
+  const key = v.substring(0, i), r = findIn(key, v.substring(i + 1));
+  if (r) reprintOperation(key, r); else toast('العملية مش موجودة على الجهاز، حدّث الصفحة وجرب تاني', 'error');
+});
+
+// بيطبع إيصال بيع قديم. الأصناف اللي اتباعت لنفس العميل بنفس الموظف في خلال دقيقتين بتتجمع في إيصال واحد (زي الفاتورة الأصلية)
+function reprintSale(x) {
+  const s = x.sale;
+  const t0 = new Date(String(s.date).replace(' ', 'T')).getTime();
+  const same = function (a, b) {
+    return String(a.customerName || '') === String(b.customerName || '') &&
+      String(a.customerPhone || '') === String(b.customerPhone || '') &&
+      String(a.employee || '') === String(b.employee || '');
+  };
+  let group = [x];
+  if (isFinite(t0)) {
+    const pool = []
+      .concat(((LISTS.listAccessorySales || {}).items || []).map(function (o) { return { type: 'accessory', sale: o, name: o.itemName }; }))
+      .concat(((LISTS.listDeviceSales || {}).items || []).map(function (o) { return { type: 'device', sale: o, name: o.deviceName }; }));
+    group = pool.filter(function (o) {
+      const t = new Date(String(o.sale.date).replace(' ', 'T')).getTime();
+      return String(o.sale.id) === String(s.id) || (isFinite(t) && Math.abs(t - t0) <= 120000 && same(o.sale, s));
+    }).sort(function (a, b) { return String(a.sale.date).localeCompare(String(b.sale.date)); });
+  }
+  const items = group.map(function (o) {
+    const q = Number(o.sale.quantity) || 1;
+    return { name: o.name, qty: q, unit: Number(o.sale.unitPrice) || (Number(o.sale.totalPrice) + (Number(o.sale.discount) || 0)) / q,
+      total: Number(o.sale.totalPrice) || 0, discount: Number(o.sale.discount) || 0,
+      warranty: o.sale.warranty === 'له ضمان' ? warrantyLabel(o.sale) : '' };
+  });
+  printReceipt({
+    customerName: s.customerName, customerPhone: s.customerPhone, employee: s.employee,
+    items: items, date: group[0].sale.date, ref: String(s.id).slice(-6).toUpperCase(),
+    total: items.reduce(function (t, i) { return t + i.total; }, 0),
+    subtotal: items.reduce(function (t, i) { return t + i.unit * i.qty; }, 0),
+    discount: items.reduce(function (t, i) { return t + i.discount; }, 0)
   });
 }
 
@@ -3004,11 +3096,11 @@ function drawReturnsLog() {
   if (!box) return;
   const rows = ((LISTS.listReturns || {}).items || []).slice().sort(function (a, b) { return String(b.date).localeCompare(String(a.date)); }).slice(0, 50);
   if (!rows.length) { box.innerHTML = '<div class="empty-state" style="padding:14px">لسه مفيش مسترجع</div>'; return; }
-  box.innerHTML = '<div class="table-wrap"><table><thead><tr><th>التاريخ</th><th>المنتج</th><th>العميل</th><th>الكمية</th><th>المبلغ المرجّع</th><th>رجع للمخزون؟</th><th>السبب</th><th>الموظف</th></tr></thead><tbody>' +
+  box.innerHTML = '<div class="table-wrap"><table><thead><tr><th>التاريخ</th><th>المنتج</th><th>العميل</th><th>الكمية</th><th>المبلغ المرجّع</th><th>رجع للمخزون؟</th><th>السبب</th><th>الموظف</th><th></th></tr></thead><tbody>' +
     rows.map(function (r) {
       return '<tr><td>' + escHtml(String(r.date).substring(0, 16)) + '</td><td>' + escHtml(r.itemName) + '</td><td>' + escHtml(r.customerName || '-') + '</td><td>' + r.quantity + '</td>' +
         '<td>' + Number(r.refundAmount).toLocaleString() + ' ج.م</td><td>' + (r.restock === 'نعم' ? '<span class="badge badge-success">نعم</span>' : '<span class="badge badge-danger">لا</span>') + '</td>' +
-        '<td>' + escHtml(r.reason || '-') + '</td><td>' + escHtml(r.employee || '-') + '</td></tr>';
+        '<td>' + escHtml(r.reason || '-') + '</td><td>' + escHtml(r.employee || '-') + '</td><td>' + reprintBtn('listReturns', r) + '</td></tr>';
     }).join('') + '</tbody></table></div>';
 }
 
@@ -3103,7 +3195,7 @@ function printReceipt(data) {
         }).join('') + '<hr />'
       : (data.faultType ? row('نوع العطل:', data.faultType) : '') + (data.productName ? row(data.faultType ? 'الجهاز:' : 'المنتج:', data.productName) : '') + '<hr />') +
     (data.discount > 0 ? row('الإجمالي قبل الخصم:', Number(data.subtotal || 0).toLocaleString('en-US') + ' ج.م') + row('الخصم:', '- ' + Number(data.discount).toLocaleString('en-US') + ' ج.م') : '') +
-    '<div class=\"row total\"><span class=\"l\">الإجمالي:</span><span class=\"v\">' + Number(data.total || 0).toLocaleString('en-US') + ' ج.م</span></div>' +
+    '<div class=\"row total\"><span class=\"l\">' + escHtml(data.totalLabel || 'الإجمالي:') + '</span><span class=\"v\">' + Number(data.total || 0).toLocaleString('en-US') + ' ج.م</span></div>' +
     (data.debt ? row('المدفوع:', Number(data.debt.paid).toLocaleString('en-US') + ' ج.م') + row('المتبقي (آجل):', Number(data.debt.remaining).toLocaleString('en-US') + ' ج.م') + row('ميعاد السداد:', data.debt.dueDate) : '') +
     (data.payment ? row('المسدد الآن:', Number(data.payment.paid).toLocaleString('en-US') + ' ج.م') +
       (Number(data.payment.remaining) > 0
