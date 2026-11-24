@@ -3225,8 +3225,15 @@ function printReceipt(data) {
       st.textContent = '@page { size: ' + width + 'mm ' + mm + 'mm; margin: 0; }';
       doc.head.appendChild(st);
     } catch (e) { /* نكمل بالارتفاع الافتراضي */ }
+    // Chrome بيطبع عنوان الصفحة الأصلية (فوق) والرابط (تحت) في الهوامش. بنصفّر الهوامش ونفضّي العنوان وقت الطباعة بس
+    const pg = document.createElement('style');
+    pg.textContent = '@page { margin: 0; }';
+    document.head.appendChild(pg);
+    const oldTitle = document.title;
+    document.title = ' ';
     try { frame.contentWindow.focus(); frame.contentWindow.print(); } catch (e) { toast('تعذرت الطباعة: ' + e.message, 'error'); }
-    setTimeout(function () { frame.remove(); }, 60000);
+    document.title = oldTitle;
+    setTimeout(function () { pg.remove(); frame.remove(); }, 60000);
   }
   const logo = doc.querySelector('.logo');
   if (logo && !logo.complete) {
