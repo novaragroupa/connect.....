@@ -3172,7 +3172,7 @@ function printReceipt(data) {
     '@page { size: ' + width + 'mm 297mm; margin: 0; }' +
     '* { box-sizing: border-box; }' +
     'html, body { margin: 0; padding: 0; background: #fff; color: #000; }' +
-    'body { width: ' + printable + 'mm; margin: 0 auto; padding: 2mm 0 8mm; font-family: Tahoma, "Segoe UI", Arial, "Noto Sans Arabic", sans-serif; font-size: 12px; line-height: 1.55; }' +
+    'body { width: 100%; max-width: ' + printable + 'mm; margin: 0 auto; padding: 2mm 2mm 8mm; font-family: Tahoma, "Segoe UI", Arial, "Noto Sans Arabic", sans-serif; font-size: 12px; line-height: 1.55; }' +
     '.center { text-align: center; }' +
     '.logo { display: block; margin: 0 auto 4px; width: ' + (width <= 58 ? 16 : 22) + 'mm; height: auto; filter: grayscale(1) contrast(1.3); }' +
     'h2 { margin: 0 0 2px; font-size: 20px; }' +
